@@ -1,6 +1,11 @@
 import { type PropsWithChildren } from "react";
 
-export default function Card({ children }: PropsWithChildren) {
-  return <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">{children}</div>;
+export default function Card({ children, className = "" }: PropsWithChildren<{ className?: string }>) {
+  return (
+    <div
+      className={`rounded-2xl border border-app-border bg-app-surface/90 p-5 shadow-lg shadow-black/20 backdrop-blur-sm ${className}`}
+    >
+      {children}
+    </div>
+  );
 }
-

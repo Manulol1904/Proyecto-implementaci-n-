@@ -10,26 +10,32 @@ import ConnectionStatus from "./components/ConnectionStatus";
 
 function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
   return (
-    <div className="min-h-screen">
-      <header className="border-b border-slate-800 bg-slate-950/60 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-4">
-            <Link to="/" className="text-sm font-semibold">
+    <div className="min-h-screen bg-app-bg">
+      <header className="border-b border-app-border bg-app-surface/40 backdrop-blur-md">
+        <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-6">
+            <Link to="/" className="text-base font-semibold tracking-tight text-app-cyan">
               Cobros Residenciales
             </Link>
-            <span className="text-xs text-slate-400">
-              {me.full_name} · {me.role}
+            <span className="text-sm text-app-muted">
+              {me.full_name}
+              <span className="mx-2 text-app-border">·</span>
+              <span className="capitalize text-white/90">{me.role}</span>
             </span>
           </div>
-          <button onClick={onLogout} className="text-xs text-slate-300 hover:text-white">
+          <button
+            type="button"
+            onClick={onLogout}
+            className="self-start rounded-xl border border-app-border bg-app-elevated px-4 py-2 text-sm text-white/90 hover:bg-white/10 sm:self-auto"
+          >
             Cerrar sesión
           </button>
         </div>
-        <div className="mx-auto max-w-6xl px-4 pb-3">
+        <div className="mx-auto max-w-6xl border-t border-app-border/60 px-4 pb-4 pt-3">
           <ConnectionStatus />
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-6">
+      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
         <Routes>
           <Route path="/" element={me.role === "admin" ? <AdminDashboard /> : <ResidentDashboard />} />
           <Route path="*" element={<Navigate to="/" replace />} />
@@ -81,7 +87,12 @@ export default function App() {
     );
   }
 
-  if (!me) return <div className="p-6 text-sm text-slate-300">Cargando…</div>;
+  if (!me)
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-app-bg p-8 text-app-muted">
+        Cargando…
+      </div>
+    );
   return <Shell me={me} onLogout={logout} />;
 }
 

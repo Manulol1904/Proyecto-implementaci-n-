@@ -28,21 +28,24 @@ export default function ConnectionStatus() {
   const pill = (label: string, s: Status) => {
     const cls =
       s === "ok"
-        ? "border-emerald-900 bg-emerald-950/40 text-emerald-200"
+        ? "border-emerald-800/80 bg-emerald-950/50 text-emerald-200"
         : s === "fail"
-          ? "border-rose-900 bg-rose-950/40 text-rose-200"
-          : "border-slate-800 bg-slate-900/60 text-slate-300";
-    return <span className={`rounded-full border px-2 py-0.5 text-[11px] ${cls}`}>{label}: {s}</span>;
+          ? "border-rose-800/80 bg-rose-950/45 text-rose-200"
+          : "border-app-border bg-app-elevated/80 text-app-muted";
+    return (
+      <span className={`rounded-full border px-2.5 py-1 text-[11px] ${cls}`}>
+        {label}: {s}
+      </span>
+    );
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-3 pt-1">
       {pill("backend", b)}
       {pill("payments", p)}
-      <span className="text-[11px] text-slate-400">
+      <span className="text-[11px] text-app-muted">
         urls: {serviceUrls.backendUrl} · {serviceUrls.paymentsUrl}
       </span>
     </div>
   );
 }
-

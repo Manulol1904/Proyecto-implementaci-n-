@@ -150,7 +150,10 @@ export default function ResidentDashboard() {
       const r = await backend.get(`/invoices/${invoiceId}/${kind}`, { responseType: "blob" });
       const size = (r.data as Blob).size ?? 0;
       logStep("Descarga OK", JSON.stringify({ content_type: r.headers["content-type"], bytes: size }));
-      const blob = new Blob([r.data], { type: r.headers["content-type"] || "application/octet-stream" });
+      const contentType = r.headers["content-type"];
+      const mime =
+        typeof contentType === "string" ? contentType : "application/octet-stream";
+      const blob = new Blob([r.data], { type: mime });
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank", "noopener,noreferrer");
       // best-effort cleanup
@@ -162,15 +165,17 @@ export default function ResidentDashboard() {
   }
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold">Mis facturas</h2>
-        <p className="text-xs text-slate-400">Consulta, descarga y paga en línea.</p>
+    <div className="space-y-8">
+      <div className="space-y-2">
+        <h2 className="text-xl font-bold tracking-tight text-app-cyan sm:text-2xl">Mis facturas</h2>
+        <p className="max-w-xl text-sm text-app-muted">Consulta, descarga y paga en línea.</p>
       </div>
 
-      {error && <div className="rounded-lg border border-rose-900 bg-rose-950/40 p-2 text-xs text-rose-200">{error}</div>}
+      {error && (
+        <div className="rounded-2xl border border-rose-800/60 bg-rose-950/30 p-4 text-sm text-rose-100">{error}</div>
+      )}
       {pendingPayment && (
-        <div className="rounded-lg border border-amber-900 bg-amber-950/30 p-2 text-xs text-amber-100">
+        <div className="rounded-2xl border border-amber-800/60 bg-amber-950/25 p-4 text-sm leading-relaxed text-amber-100">
           Pago pendiente de confirmación. Estamos actualizando automáticamente…
         </div>
       )}
@@ -180,12 +185,12 @@ export default function ResidentDashboard() {
           <div className="flex items-center justify-between">
             <div>
               <div className="text-sm font-semibold">Pasarela (demo)</div>
-              <div className="text-xs text-slate-400">En dev puedes elegir proveedor para probar el flujo.</div>
+              <div className="text-sm text-app-muted">En dev puedes elegir proveedor para probar el flujo.</div>
             </div>
             <select
               value={gateway}
               onChange={(e) => setGateway(e.target.value as any)}
-              className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-xs"
+              className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
             >
               <option value="auto">Auto (config servidor)</option>
               <option value="mock">Mock</option>
@@ -198,28 +203,29 @@ export default function ResidentDashboard() {
 
       <Card>
         <div className="overflow-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="text-slate-400">
+          <table className="w-full text-left text-sm">
+            <thead className="text-app-muted">
               <tr>
-                <th className="py-2">Periodo</th>
-                <th className="py-2">Vence</th>
-                <th className="py-2">Valor</th>
-                <th className="py-2">Estado</th>
-                <th className="py-2 text-right">Acciones</th>
+                <th className="py-3">Periodo</th>
+                <th className="py-3">Vence</th>
+                <th className="py-3">Valor</th>
+                <th className="py-3">Estado</th>
+                <th className="py-3 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {invoices.map((i) => (
-                <tr key={i._id} className="border-t border-slate-800">
-                  <td className="py-2">{i.period}</td>
-                  <td className="py-2">{new Date(i.due_date).toLocaleDateString("es-CO")}</td>
-                  <td className="py-2">${i.amount_cop.toLocaleString("es-CO")}</td>
-                  <td className="py-2">{i.status}</td>
-                  <td className="py-2 text-right">
-                    <div className="flex justify-end gap-2">
+                <tr key={i._id} className="border-t border-app-border">
+                  <td className="py-3">{i.period}</td>
+                  <td className="py-3">{new Date(i.due_date).toLocaleDateString("es-CO")}</td>
+                  <td className="py-3">${i.amount_cop.toLocaleString("es-CO")}</td>
+                  <td className="py-3">{i.status}</td>
+                  <td className="py-3 text-right">
+                    <div className="flex flex-wrap justify-end gap-2">
                       {(i.pdf_url || i.factus_public_url) && (
                         <button
-                          className="text-xs text-indigo-300 hover:text-indigo-200"
+                          type="button"
+                          className="text-xs font-medium text-app-cyan hover:brightness-125"
                           onClick={() => download(i._id, "pdf")}
                         >
                           PDF
@@ -227,7 +233,8 @@ export default function ResidentDashboard() {
                       )}
                       {i.xml_url && (
                         <button
-                          className="text-xs text-indigo-300 hover:text-indigo-200"
+                          type="button"
+                          className="text-xs font-medium text-app-cyan hover:brightness-125"
                           onClick={() => download(i._id, "xml")}
                         >
                           XML
@@ -246,7 +253,7 @@ export default function ResidentDashboard() {
               ))}
               {invoices.length === 0 && (
                 <tr>
-                  <td className="py-3 text-slate-400" colSpan={5}>
+                  <td className="py-4 text-app-muted" colSpan={5}>
                     No tienes facturas aún.
                   </td>
                 </tr>
@@ -257,25 +264,33 @@ export default function ResidentDashboard() {
       </Card>
 
       <Card>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-semibold">Proceso (API)</div>
-            <div className="text-xs text-slate-400">Registro de llamadas y respuestas más recientes.</div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <div className="text-base font-semibold text-white">Proceso (API)</div>
+            <div className="text-sm text-app-muted">Registro de llamadas y respuestas más recientes.</div>
           </div>
-          <button className="text-xs text-slate-300 hover:text-white" onClick={() => setShowProcess((v) => !v)}>
+          <button
+            type="button"
+            className="shrink-0 rounded-xl border border-app-border bg-app-elevated px-4 py-2 text-sm text-white/90 hover:bg-white/10"
+            onClick={() => setShowProcess((v) => !v)}
+          >
             {showProcess ? "Ocultar" : "Mostrar"}
           </button>
         </div>
         {showProcess && (
-          <div className="mt-3 space-y-2 text-xs">
-            {steps.length === 0 && <div className="text-slate-400">Aún no hay acciones. Dale “Pagar” o descarga PDF/XML.</div>}
+          <div className="mt-5 space-y-3 text-sm">
+            {steps.length === 0 && (
+              <div className="text-app-muted">Aún no hay acciones. Dale “Pagar” o descarga PDF/XML.</div>
+            )}
             {steps.map((s, idx) => (
-              <div key={idx} className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2">
-                <div className="flex items-center justify-between">
-                  <div className="font-semibold">{s.title}</div>
-                  <div className="text-slate-400">{s.at}</div>
+              <div key={idx} className="rounded-xl border border-app-border bg-app-surface px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-semibold text-white">{s.title}</div>
+                  <div className="text-xs text-app-muted">{s.at}</div>
                 </div>
-                {s.detail && <pre className="mt-1 whitespace-pre-wrap break-words text-slate-200">{s.detail}</pre>}
+                {s.detail && (
+                  <pre className="mt-2 whitespace-pre-wrap break-words text-sm text-white/90">{s.detail}</pre>
+                )}
               </div>
             ))}
           </div>
