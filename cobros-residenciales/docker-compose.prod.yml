@@ -1,0 +1,45 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      - VITE_BACKEND_URL=${VITE_BACKEND_URL}
+      - VITE_PAYMENTS_URL=${VITE_PAYMENTS_URL}
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+      - payments
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ./worker
+    env_file:
+      - ./.env
+    depends_on:
+      - redis
+
+  payments:
+    build:
+      context: ./payments
+    env_file:
+      - ./.env
+    ports:
+      - "8002:8002"
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

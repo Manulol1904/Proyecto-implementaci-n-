@@ -1,0 +1,75 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      - VITE_BACKEND_URL=${VITE_BACKEND_URL:-http://localhost:8000}
+      - VITE_PAYMENTS_URL=${VITE_PAYMENTS_URL:-http://localhost:8002}
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+      - payments
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./.env
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+      - redis
+
+  worker:
+    build:
+      context: ./worker
+    env_file:
+      - ./.env
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      - mongo
+      - redis
+
+  payments:
+    build:
+      context: ./payments
+    env_file:
+      - ./.env
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+    ports:
+      - "8002:8002"
+    depends_on:
+      - mongo
+      - redis
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  mongo-express:
+    image: mongo-express:1.0.2-20-alpine3.19
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongo
+      - ME_CONFIG_MONGODB_PORT=27017
+      - ME_CONFIG_BASICAUTH=false
+    ports:
+      - "8081:8081"
+    depends_on:
+      - mongo
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  mongo_data:
