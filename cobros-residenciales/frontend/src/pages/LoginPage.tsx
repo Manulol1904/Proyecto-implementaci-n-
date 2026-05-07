@@ -102,6 +102,7 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
 
             <form onSubmit={submit} className="flex w-full flex-col items-center gap-5">
               <input
+                data-testid="login-email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
@@ -114,6 +115,7 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
               />
 
               <input
+                data-testid="login-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 type="password"
@@ -136,6 +138,7 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
 
               {error && (
                 <div
+                  data-testid="login-error"
                   className="w-full rounded-[50px] border px-4 py-2 text-center text-xs text-rose-200"
                   style={{
                     borderColor: "#7f1d1d",
@@ -147,6 +150,7 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
               )}
 
               <button
+                data-testid="login-submit"
                 type="submit"
                 disabled={loading}
                 className="mt-2 w-full rounded-[50px] py-3.5 text-base font-semibold transition-opacity disabled:opacity-50"

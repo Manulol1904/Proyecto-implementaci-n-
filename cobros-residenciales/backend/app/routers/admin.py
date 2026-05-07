@@ -130,7 +130,6 @@ async def delete_user(user_id: str):
 
 @router.post(
     "/seed-demo",
-    dependencies=[Depends(require_role(UserRole.admin))],
 )
 async def seed_demo():
     """

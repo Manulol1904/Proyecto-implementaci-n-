@@ -563,7 +563,9 @@ export default function AdminDashboard() {
     <div className="space-y-8">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-2">
-          <h2 className="text-xl font-bold tracking-tight text-app-cyan sm:text-2xl">Dashboard administrador</h2>
+          <h2 data-testid="admin-dashboard-title" className="text-xl font-bold tracking-tight text-app-cyan sm:text-2xl">
+            Dashboard administrador
+          </h2>
           <p className="max-w-2xl text-sm text-app-muted">
             Elige una sección para trabajar sin que todo se vea amontonado.
           </p>
@@ -629,7 +631,12 @@ export default function AdminDashboard() {
               Nueva unidad
             </Button>
           )}
-          <Button onClick={seedDemo} disabled={creating} className="!bg-emerald-600 text-white hover:!bg-emerald-500">
+          <Button
+            data-testid="admin-seed-demo"
+            onClick={seedDemo}
+            disabled={creating}
+            className="!bg-emerald-600 text-white hover:!bg-emerald-500"
+          >
             Crear demo
           </Button>
         </div>

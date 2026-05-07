@@ -24,6 +24,7 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
             </span>
           </div>
           <button
+            data-testid="logout"
             type="button"
             onClick={onLogout}
             className="self-start rounded-xl border border-app-border bg-app-elevated px-4 py-2 text-sm text-white/90 hover:bg-white/10 sm:self-auto"

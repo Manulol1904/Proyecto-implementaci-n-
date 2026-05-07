@@ -167,7 +167,9 @@ export default function ResidentDashboard() {
   return (
     <div className="space-y-8">
       <div className="space-y-2">
-        <h2 className="text-xl font-bold tracking-tight text-app-cyan sm:text-2xl">Mis facturas</h2>
+        <h2 data-testid="resident-dashboard-title" className="text-xl font-bold tracking-tight text-app-cyan sm:text-2xl">
+          Mis facturas
+        </h2>
         <p className="max-w-xl text-sm text-app-muted">Consulta, descarga y paga en línea.</p>
       </div>
 
