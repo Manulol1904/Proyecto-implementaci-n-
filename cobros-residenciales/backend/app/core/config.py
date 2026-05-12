@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     admin_fee_base_cop: int = 300000
     invoice_due_day: int = 10
 
+    visitor_parking_hourly_cop: int = 2000
+    social_hall_daily_cop: int = 150000
+    gym_monthly_cop: int = 40000
+
     # CORS
     cors_allow_origins: list[str] = ["http://localhost:5173"]
 

@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.mongo import connect_mongo, disconnect_mongo
-from app.routers import admin, auth, factus, invoices, reports, units
+from app.routers import admin, amenities, auth, factus, gym, invoices, reports, reservations, units
 
 
 configure_logging()
@@ -25,6 +25,9 @@ app.include_router(units.router, prefix="/units", tags=["units"])
 app.include_router(invoices.router, prefix="/invoices", tags=["invoices"])
 app.include_router(reports.router, prefix="/reports", tags=["reports"])
 app.include_router(factus.router, prefix="/factus", tags=["factus"])
+app.include_router(amenities.router, prefix="/amenities", tags=["amenities"])
+app.include_router(reservations.router, prefix="/reservations", tags=["reservations"])
+app.include_router(gym.router, prefix="/gym", tags=["gym"])
 
 
 @app.on_event("startup")

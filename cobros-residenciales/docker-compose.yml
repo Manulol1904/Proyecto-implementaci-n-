@@ -5,8 +5,14 @@ services:
     environment:
       - VITE_BACKEND_URL=${VITE_BACKEND_URL:-http://localhost:8000}
       - VITE_PAYMENTS_URL=${VITE_PAYMENTS_URL:-http://localhost:8002}
+      - CHOKIDAR_USEPOLLING=true
     ports:
       - "5173:5173"
+    volumes:
+      # Bind-mount source so Vite HMR picks up host edits during dev.
+      # The anonymous `/app/node_modules` volume preserves the container's installed deps.
+      - ./frontend:/app
+      - /app/node_modules
     depends_on:
       - backend
       - payments

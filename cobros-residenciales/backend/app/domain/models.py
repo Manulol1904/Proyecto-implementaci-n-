@@ -3,7 +3,14 @@ from typing import Any
 
 from pydantic import BaseModel, EmailStr, Field
 
-from app.domain.enums import InvoiceStatus, PaymentStatus, UserRole
+from app.domain.enums import (
+    AmenityType,
+    GymSubscriptionStatus,
+    InvoiceStatus,
+    PaymentStatus,
+    ReservationStatus,
+    UserRole,
+)
 
 
 class MongoModel(BaseModel):
@@ -113,4 +120,54 @@ class PaymentPublic(MongoModel):
     raw_event: dict[str, Any] | None = None
     created_at: datetime
     confirmed_at: datetime | None = None
+
+
+class AmenityCreate(BaseModel):
+    type: AmenityType
+    code: str = Field(min_length=1, max_length=30, description="Ej: VIS-01, SALON-A")
+    active: bool = True
+
+
+class AmenityUpdate(BaseModel):
+    code: str | None = Field(default=None, min_length=1, max_length=30)
+    active: bool | None = None
+
+
+class AmenityPublic(MongoModel):
+    type: AmenityType
+    code: str
+    active: bool
+    created_at: datetime
+
+
+class ReservationCreate(BaseModel):
+    amenity_id: str
+    start_at: datetime
+    end_at: datetime
+
+
+class ReservationPublic(MongoModel):
+    amenity_id: str
+    amenity_type: AmenityType
+    amenity_code: str
+    user_id: str
+    start_at: datetime
+    end_at: datetime
+    amount_cop: int
+    status: ReservationStatus
+    created_at: datetime
+    paid_at: datetime | None = None
+
+
+class GymSubscriptionCreate(BaseModel):
+    period: str | None = Field(default=None, description="YYYY-MM (opcional)")
+
+
+class GymSubscriptionPublic(MongoModel):
+    user_id: str
+    period: str
+    amount_cop: int
+    status: GymSubscriptionStatus
+    created_at: datetime
+    paid_at: datetime | None = None
 

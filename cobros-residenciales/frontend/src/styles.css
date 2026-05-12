@@ -1,4 +1,186 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  /* ----- Light theme (default) ----- */
+  :root {
+    --app-bg: 244 245 251;
+    --app-surface: 255 255 255;
+    --app-elevated: 240 242 248;
+    --app-border: 228 230 239;
+    --app-muted: 107 114 128;
+    --app-text: 31 36 51;
+
+    --app-primary: 108 92 231;
+    --app-primary-hover: 91 76 214;
+    --app-accent: 236 72 153;
+
+    --app-sidebar: 30 27 58;
+    --app-sidebar-hover: 42 39 80;
+    --app-sidebar-active: 59 47 120;
+    --app-sidebar-text: 230 231 242;
+    --app-sidebar-muted: 141 143 179;
+
+    --app-danger-bg: 254 226 226;
+    --app-danger-text: 159 18 57;
+    --app-danger-border: 252 165 165;
+    --app-success-bg: 209 250 229;
+    --app-success-text: 6 95 70;
+    --app-success-border: 134 239 172;
+    --app-warning-bg: 254 243 199;
+    --app-warning-text: 146 64 14;
+    --app-warning-border: 252 211 77;
+
+    /* Charts (SVG fills) */
+    --chart-primary: 108 92 231;
+    --chart-warning: 245 158 11;
+    --chart-success: 16 185 129;
+
+    /* Card shadow (more presence in light, almost flat in dark) */
+    --card-shadow: 0 4px 16px -6px rgba(31, 36, 51, 0.12);
+    --card-shadow-hover: 0 10px 28px -10px rgba(31, 36, 51, 0.22);
+
+    /* Residential background overlay (final wash) */
+    --residential-overlay-from: rgba(244, 245, 251, 0.72);
+    --residential-overlay-to: rgba(244, 245, 251, 0.94);
+    --residential-glow-primary: rgba(108, 92, 231, 0.22);
+    --residential-glow-accent: rgba(236, 72, 153, 0.14);
+  }
+
+  /* ----- Dark theme ----- */
+  html.dark {
+    /* Cooler near-black palette with clear hierarchy:
+       bg < surface < elevated for proper depth. */
+    --app-bg: 12 13 28;
+    --app-surface: 24 25 48;
+    --app-elevated: 36 37 64;
+    --app-border: 56 58 92;
+    --app-muted: 165 170 195;
+    --app-text: 236 237 245;
+
+    --app-primary: 155 138 255;
+    --app-primary-hover: 138 121 240;
+    --app-accent: 244 114 182;
+
+    --app-sidebar: 17 17 35;
+    --app-sidebar-hover: 30 28 60;
+    --app-sidebar-active: 91 73 200;
+    --app-sidebar-text: 236 237 245;
+    --app-sidebar-muted: 175 178 210;
+
+    --app-danger-bg: 76 10 30;
+    --app-danger-text: 254 205 211;
+    --app-danger-border: 159 18 57;
+    --app-success-bg: 6 60 45;
+    --app-success-text: 187 247 208;
+    --app-success-border: 16 122 87;
+    --app-warning-bg: 89 47 12;
+    --app-warning-text: 253 230 138;
+    --app-warning-border: 180 83 9;
+
+    /* Brighter chart colors so bars pop on a dark elevated surface. */
+    --chart-primary: 167 139 250;
+    --chart-warning: 251 191 36;
+    --chart-success: 52 211 153;
+
+    /* Replace heavy drop-shadow with subtle inner halo in dark. */
+    --card-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset, 0 6px 24px -12px rgba(0, 0, 0, 0.6);
+    --card-shadow-hover: 0 1px 0 0 rgba(255, 255, 255, 0.06) inset, 0 12px 32px -10px rgba(0, 0, 0, 0.7);
+
+    --residential-overlay-from: rgba(12, 13, 28, 0.9);
+    --residential-overlay-to: rgba(12, 13, 28, 0.97);
+    --residential-glow-primary: rgba(155, 138, 255, 0.16);
+    --residential-glow-accent: rgba(244, 114, 182, 0.1);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-app-bg text-app-text font-sans antialiased;
+  }
+}
+
+@layer components {
+  .animated-residential-bg {
+    @apply pointer-events-none absolute inset-0 overflow-hidden;
+  }
+
+  .animated-residential-bg::before {
+    content: "";
+    position: absolute;
+    inset: -8%;
+    background-image:
+      linear-gradient(90deg, rgba(30, 27, 58, 0.88), rgba(108, 92, 231, 0.34), rgba(244, 245, 251, 0.82)),
+      url("/residential-bg.png");
+    background-size: cover;
+    background-position: center;
+    filter: saturate(1.02) contrast(1.02);
+    opacity: 0.42;
+    transform-origin: center;
+    animation: residential-pan 22s ease-in-out infinite alternate;
+  }
+
+  html.dark .animated-residential-bg::before {
+    /* Cooler, dimmer wash on the photo when dark mode is active. */
+    background-image:
+      linear-gradient(90deg, rgba(13, 14, 28, 0.92), rgba(108, 92, 231, 0.28), rgba(13, 14, 28, 0.88)),
+      url("/residential-bg.png");
+    opacity: 0.18;
+  }
+
+  .animated-residential-bg::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 18% 15%, var(--residential-glow-primary), transparent 28%),
+      radial-gradient(circle at 82% 22%, var(--residential-glow-accent), transparent 26%),
+      linear-gradient(180deg, var(--residential-overlay-from), var(--residential-overlay-to));
+  }
+
+  /* Sidebar navigation item */
+  .nav-item {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-app-sidebar-muted transition;
+  }
+  .nav-item:hover {
+    @apply bg-app-sidebar-hover text-app-sidebar-text;
+  }
+  .nav-item-active {
+    @apply bg-app-sidebar-active text-white;
+  }
+
+  /* Subtle scrollbar for dark sidebar */
+  .sidebar-scroll::-webkit-scrollbar {
+    width: 6px;
+  }
+  .sidebar-scroll::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+  }
+}
+
+@keyframes residential-pan {
+  0% {
+    transform: scale(1.08) translate3d(-1.8%, -1.2%, 0);
+  }
+  50% {
+    transform: scale(1.14) translate3d(1.4%, 0.9%, 0);
+  }
+  100% {
+    transform: scale(1.1) translate3d(2.2%, -0.7%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animated-residential-bg::before {
+    animation: none;
+    transform: scale(1.08);
+  }
+}

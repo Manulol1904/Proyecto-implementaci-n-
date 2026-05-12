@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import { backend, payments } from "../../lib/api";
+import { useSection, type ResidentSection } from "../../lib/section";
 
 type Invoice = {
   _id: string;
@@ -14,34 +15,116 @@ type Invoice = {
   factus_public_url?: string | null;
 };
 
+type Amenity = {
+  _id: string;
+  type: "visitor_parking" | "social_hall";
+  code: string;
+  active: boolean;
+};
+
+type Reservation = {
+  _id: string;
+  amenity_id: string;
+  amenity_type: "visitor_parking" | "social_hall";
+  amenity_code: string;
+  user_id: string;
+  start_at: string;
+  end_at: string;
+  amount_cop: number;
+  status: "Pendiente" | "Pagada" | "Cancelada";
+  paid_at?: string | null;
+};
+
+type GymSubscription = {
+  _id: string;
+  user_id: string;
+  period: string;
+  amount_cop: number;
+  status: "Pendiente" | "Pagada";
+  paid_at?: string | null;
+};
+
+type Tab = ResidentSection;
+type TargetKind = "invoice" | "reservation" | "gym_subscription";
+
+function currentPeriod(): string {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+function formatLocalDateTime(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export default function ResidentDashboard() {
+  /** Pestaña activa controlada desde el sidebar (vía SectionContext). */
+  const { section: sectionRaw, setSection: setSectionRaw } = useSection();
+  const tab = sectionRaw as Tab;
+  const setTab = (t: Tab) => setSectionRaw(t);
+
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [amenities, setAmenities] = useState<Amenity[]>([]);
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [gymSubs, setGymSubs] = useState<GymSubscription[]>([]);
+
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showProcess, setShowProcess] = useState(false);
   const [steps, setSteps] = useState<Array<{ at: string; title: string; detail?: string }>>([]);
   const [gateway, setGateway] = useState<"auto" | "mock" | "wompi" | "epayco">("auto");
-  const [pendingPayment, setPendingPayment] = useState<{ paymentId: string; invoiceId: string } | null>(null);
+  const [pendingPayment, setPendingPayment] = useState<{ paymentId: string; targetKind: TargetKind; targetId: string } | null>(null);
+
+  // Form: parqueadero visitantes
+  const [parkingAmenityId, setParkingAmenityId] = useState("");
+  const [parkingStart, setParkingStart] = useState("");
+  const [parkingEnd, setParkingEnd] = useState("");
+
+  // Form: salón comunal
+  const [hallAmenityId, setHallAmenityId] = useState("");
+  const [hallDate, setHallDate] = useState("");
 
   function logStep(title: string, detail?: string) {
     setShowProcess(true);
     setSteps((s) => [{ at: new Date().toLocaleTimeString("es-CO"), title, detail }, ...s].slice(0, 40));
   }
 
-  async function refresh() {
-    const r = await backend.get("/invoices/my");
-    setInvoices(r.data);
+  async function refreshAll() {
+    setError(null);
+    try {
+      const [inv, am, res, gym] = await Promise.all([
+        backend.get("/invoices/my"),
+        backend.get("/amenities", { params: { active: true } }),
+        backend.get("/reservations/my"),
+        backend.get("/gym/subscriptions/my"),
+      ]);
+      setInvoices(inv.data);
+      setAmenities(am.data);
+      setReservations(res.data);
+      setGymSubs(gym.data);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudieron cargar tus datos");
+    }
   }
 
   useEffect(() => {
-    refresh().catch(() => setError("No se pudieron cargar tus facturas"));
+    void refreshAll();
   }, []);
 
-  async function pay(invoiceId: string) {
+  const parkings = useMemo(() => amenities.filter((a) => a.type === "visitor_parking" && a.active), [amenities]);
+  const halls = useMemo(() => amenities.filter((a) => a.type === "social_hall" && a.active), [amenities]);
+
+  const period = currentPeriod();
+  const gymCurrent = useMemo(() => gymSubs.find((s) => s.period === period) ?? null, [gymSubs, period]);
+
+  async function pay(targetKind: TargetKind, targetId: string) {
     setLoading(true);
     setError(null);
     try {
-      const payload: any = { invoice_id: invoiceId };
+      const payload: any = { target_kind: targetKind, target_id: targetId };
       if (import.meta.env.DEV && gateway !== "auto") payload.provider = gateway;
       logStep("POST payments: crear pago", JSON.stringify(payload));
       const r = await payments.post("/payments", payload);
@@ -57,28 +140,22 @@ export default function ResidentDashboard() {
         // ignore
       }
 
-      // Demo UX: en dev, simula confirmación inmediata (sin webhooks externos)
       if (import.meta.env.DEV && provider !== "mock") {
         logStep("POST demo/confirm: simular confirmación", paymentId);
         await payments.post(`/demo/confirm/${paymentId}`);
-        logStep("Confirmación demo aplicada", "Factura marcada como Pagada (demo)");
-        await refresh();
-        const inv = await backend.get(`/invoices/${invoiceId}`);
-        logStep("GET invoices/{id}: estado final", JSON.stringify({ status: inv.data.status, paid_at: inv.data.paid_at }));
+        logStep("Confirmación demo aplicada", "Marcado como Pagado (demo)");
+        await refreshAll();
         return;
       }
 
       if (provider === "mock") {
         logStep("POST mock/confirm: simular confirmación", paymentId);
         await payments.post(`/mock/confirm/${paymentId}`);
-        logStep("Confirmación mock aplicada", "Factura marcada como Pagada (mock)");
-        await refresh();
-        const inv = await backend.get(`/invoices/${invoiceId}`);
-        logStep("GET invoices/{id}: estado final", JSON.stringify({ status: inv.data.status, paid_at: inv.data.paid_at }));
+        logStep("Confirmación mock aplicada", "Marcado como Pagado (mock)");
+        await refreshAll();
       } else if (provider === "epayco" && link.startsWith("epayco_session:")) {
         const sessionId = link.replace("epayco_session:", "");
         logStep("Proveedor ePayco: abrir checkout", JSON.stringify({ sessionId }));
-        // Smart Checkout requiere script externo; lo cargamos bajo demanda.
         const scriptId = "epayco-checkout";
         if (!document.getElementById(scriptId)) {
           const s = document.createElement("script");
@@ -91,7 +168,6 @@ export default function ResidentDashboard() {
             s.onerror = () => reject(new Error("No se pudo cargar checkout ePayco"));
           });
         }
-
         // @ts-expect-error epayco global
         const checkout = window.ePayco.checkout.configure({
           sessionId,
@@ -99,15 +175,15 @@ export default function ResidentDashboard() {
           test: true,
         });
         checkout.open();
-        setError("Se abrió ePayco. Cuando se confirme por webhook, refresca esta página.");
+        setInfo("Se abrió ePayco. Cuando se confirme por webhook, refresca esta página.");
         logStep("Checkout ePayco abierto", "Esperando confirmación por webhook");
-        setPendingPayment({ paymentId, invoiceId });
+        setPendingPayment({ paymentId, targetKind, targetId });
       } else {
         logStep("Proveedor link externo: abrir", link);
         window.open(link, "_blank", "noopener,noreferrer");
-        setError("Se abrió el link de pago. Cuando el pago se confirme por webhook, refresca esta página.");
+        setInfo("Se abrió el link de pago. Cuando el pago se confirme por webhook, refresca esta página.");
         logStep("Link de pago abierto", "Esperando confirmación por webhook");
-        setPendingPayment({ paymentId, invoiceId });
+        setPendingPayment({ paymentId, targetKind, targetId });
       }
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "No se pudo iniciar el pago");
@@ -126,9 +202,7 @@ export default function ResidentDashboard() {
         const p = await payments.get(`/payments/${pendingPayment.paymentId}`);
         logStep("Polling payments/{id}", JSON.stringify({ status: p.data.status }));
         if (p.data.status === "confirmed" || p.data.status === "failed") {
-          await refresh();
-          const inv = await backend.get(`/invoices/${pendingPayment.invoiceId}`);
-          logStep("Polling invoices/{id}", JSON.stringify({ status: inv.data.status, paid_at: inv.data.paid_at }));
+          await refreshAll();
           if (!cancelled) setPendingPayment(null);
         }
       } catch (e: any) {
@@ -151,12 +225,10 @@ export default function ResidentDashboard() {
       const size = (r.data as Blob).size ?? 0;
       logStep("Descarga OK", JSON.stringify({ content_type: r.headers["content-type"], bytes: size }));
       const contentType = r.headers["content-type"];
-      const mime =
-        typeof contentType === "string" ? contentType : "application/octet-stream";
+      const mime = typeof contentType === "string" ? contentType : "application/octet-stream";
       const blob = new Blob([r.data], { type: mime });
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank", "noopener,noreferrer");
-      // best-effort cleanup
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? `No se pudo descargar ${kind.toUpperCase()}`);
@@ -164,20 +236,139 @@ export default function ResidentDashboard() {
     }
   }
 
+  async function reserveParking() {
+    if (!parkingAmenityId || !parkingStart || !parkingEnd) {
+      setError("Selecciona parqueadero, hora de inicio y de fin.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const startISO = new Date(parkingStart).toISOString();
+      const endISO = new Date(parkingEnd).toISOString();
+      logStep("POST reservations (parqueadero)", JSON.stringify({ amenity_id: parkingAmenityId, start_at: startISO, end_at: endISO }));
+      const r = await backend.post("/reservations", {
+        amenity_id: parkingAmenityId,
+        start_at: startISO,
+        end_at: endISO,
+      });
+      logStep("Reserva creada", JSON.stringify({ id: r.data._id, amount_cop: r.data.amount_cop }));
+      setInfo(`Reserva creada por $${Number(r.data.amount_cop).toLocaleString("es-CO")}. Iniciando pago…`);
+      setParkingStart("");
+      setParkingEnd("");
+      await refreshAll();
+      await pay("reservation", r.data._id);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo crear la reserva");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function reserveHall() {
+    if (!hallAmenityId || !hallDate) {
+      setError("Selecciona salón y fecha.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const start = new Date(`${hallDate}T00:00:00`);
+      const end = new Date(`${hallDate}T23:59:00`);
+      logStep("POST reservations (salón)", JSON.stringify({ amenity_id: hallAmenityId, date: hallDate }));
+      const r = await backend.post("/reservations", {
+        amenity_id: hallAmenityId,
+        start_at: start.toISOString(),
+        end_at: end.toISOString(),
+      });
+      logStep("Reserva creada", JSON.stringify({ id: r.data._id, amount_cop: r.data.amount_cop }));
+      setInfo(`Reserva creada por $${Number(r.data.amount_cop).toLocaleString("es-CO")}. Iniciando pago…`);
+      setHallDate("");
+      await refreshAll();
+      await pay("reservation", r.data._id);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo crear la reserva");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function cancelReservation(id: string) {
+    if (!confirm("¿Cancelar esta reserva?")) return;
+    setLoading(true);
+    setError(null);
+    try {
+      logStep("POST reservations/{id}/cancel", id);
+      await backend.post(`/reservations/${id}/cancel`);
+      setInfo("Reserva cancelada.");
+      await refreshAll();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo cancelar");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function subscribeGymAndPay() {
+    setLoading(true);
+    setError(null);
+    setInfo(null);
+    try {
+      logStep("POST gym/subscriptions", JSON.stringify({ period }));
+      const r = await backend.post("/gym/subscriptions", { period });
+      logStep("Suscripción lista", JSON.stringify({ id: r.data._id, amount_cop: r.data.amount_cop, status: r.data.status }));
+      await refreshAll();
+      if (r.data.status === "Pagada") {
+        setInfo("Tu suscripción de este mes ya está pagada.");
+        return;
+      }
+      await pay("gym_subscription", r.data._id);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo crear la suscripción");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const TAB_META: Record<Tab, { title: string; subtitle: string }> = {
+    facturas: {
+      title: "Mis facturas",
+      subtitle: "Cuotas de administración pendientes y pagadas.",
+    },
+    parqueadero: {
+      title: "Parqueadero de visitantes",
+      subtitle: "Reserva por horas para tus invitados.",
+    },
+    salon: {
+      title: "Salón comunal",
+      subtitle: "Reserva el salón para tus eventos.",
+    },
+    gimnasio: {
+      title: "Gimnasio",
+      subtitle: "Suscripción mensual al gimnasio del conjunto.",
+    },
+  };
+  const tabMeta = TAB_META[tab];
+
   return (
     <div className="space-y-8">
       <div className="space-y-2">
-        <h2 data-testid="resident-dashboard-title" className="text-xl font-bold tracking-tight text-app-cyan sm:text-2xl">
-          Mis facturas
+        <h2 data-testid="resident-dashboard-title" className="text-xl font-bold tracking-tight text-app-text sm:text-2xl">
+          {tabMeta.title}
         </h2>
-        <p className="max-w-xl text-sm text-app-muted">Consulta, descarga y paga en línea.</p>
+        <p className="max-w-xl text-sm text-app-muted">{tabMeta.subtitle}</p>
       </div>
 
       {error && (
-        <div className="rounded-2xl border border-rose-800/60 bg-rose-950/30 p-4 text-sm text-rose-100">{error}</div>
+        <div className="rounded-2xl border border-app-danger-border bg-app-danger-bg p-4 text-sm text-app-danger-text">{error}</div>
+      )}
+      {info && (
+        <div className="rounded-2xl border border-app-success-border bg-app-success-bg p-4 text-sm text-app-success-text">{info}</div>
       )}
       {pendingPayment && (
-        <div className="rounded-2xl border border-amber-800/60 bg-amber-950/25 p-4 text-sm leading-relaxed text-amber-100">
+        <div className="rounded-2xl border border-app-warning-border bg-app-warning-bg p-4 text-sm leading-relaxed text-app-warning-text">
           Pago pendiente de confirmación. Estamos actualizando automáticamente…
         </div>
       )}
@@ -192,7 +383,7 @@ export default function ResidentDashboard() {
             <select
               value={gateway}
               onChange={(e) => setGateway(e.target.value as any)}
-              className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+              className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
             >
               <option value="auto">Auto (config servidor)</option>
               <option value="mock">Mock</option>
@@ -203,77 +394,343 @@ export default function ResidentDashboard() {
         </Card>
       )}
 
-      <Card>
-        <div className="overflow-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="text-app-muted">
-              <tr>
-                <th className="py-3">Periodo</th>
-                <th className="py-3">Vence</th>
-                <th className="py-3">Valor</th>
-                <th className="py-3">Estado</th>
-                <th className="py-3 text-right">Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {invoices.map((i) => (
-                <tr key={i._id} className="border-t border-app-border">
-                  <td className="py-3">{i.period}</td>
-                  <td className="py-3">{new Date(i.due_date).toLocaleDateString("es-CO")}</td>
-                  <td className="py-3">${i.amount_cop.toLocaleString("es-CO")}</td>
-                  <td className="py-3">{i.status}</td>
-                  <td className="py-3 text-right">
-                    <div className="flex flex-wrap justify-end gap-2">
-                      {(i.pdf_url || i.factus_public_url) && (
-                        <button
-                          type="button"
-                          className="text-xs font-medium text-app-cyan hover:brightness-125"
-                          onClick={() => download(i._id, "pdf")}
-                        >
-                          PDF
-                        </button>
-                      )}
-                      {i.xml_url && (
-                        <button
-                          type="button"
-                          className="text-xs font-medium text-app-cyan hover:brightness-125"
-                          onClick={() => download(i._id, "xml")}
-                        >
-                          XML
-                        </button>
-                      )}
-                      <Button
-                        disabled={loading || i.status === "Pagada"}
-                        onClick={() => pay(i._id)}
-                        className="px-3 py-1 text-xs"
-                      >
-                        {i.status === "Pagada" ? "Pagada" : "Pagar"}
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {invoices.length === 0 && (
+      {tab === "facturas" && (
+        <Card>
+          <div className="overflow-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-app-muted">
                 <tr>
-                  <td className="py-4 text-app-muted" colSpan={5}>
-                    No tienes facturas aún.
-                  </td>
+                  <th className="py-3">Periodo</th>
+                  <th className="py-3">Vence</th>
+                  <th className="py-3">Valor</th>
+                  <th className="py-3">Estado</th>
+                  <th className="py-3 text-right">Acciones</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {invoices.map((i) => (
+                  <tr key={i._id} className="border-t border-app-border">
+                    <td className="py-3">{i.period}</td>
+                    <td className="py-3">{new Date(i.due_date).toLocaleDateString("es-CO")}</td>
+                    <td className="py-3">${i.amount_cop.toLocaleString("es-CO")}</td>
+                    <td className="py-3">{i.status}</td>
+                    <td className="py-3 text-right">
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {(i.pdf_url || i.factus_public_url) && (
+                          <button
+                            type="button"
+                            className="text-xs font-medium text-app-cyan hover:brightness-125"
+                            onClick={() => download(i._id, "pdf")}
+                          >
+                            PDF
+                          </button>
+                        )}
+                        {i.xml_url && (
+                          <button
+                            type="button"
+                            className="text-xs font-medium text-app-cyan hover:brightness-125"
+                            onClick={() => download(i._id, "xml")}
+                          >
+                            XML
+                          </button>
+                        )}
+                        <Button
+                          disabled={loading || i.status === "Pagada"}
+                          onClick={() => pay("invoice", i._id)}
+                          className="px-3 py-1 text-xs"
+                        >
+                          {i.status === "Pagada" ? "Pagada" : "Pagar"}
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {invoices.length === 0 && (
+                  <tr>
+                    <td className="py-4 text-app-muted" colSpan={5}>
+                      No tienes facturas aún.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {tab === "parqueadero" && (
+        <div className="space-y-6">
+          <Card>
+            <div className="space-y-4">
+              <div>
+                <div className="text-base font-semibold text-app-text">Reservar parqueadero de visitantes</div>
+                <div className="text-sm text-app-muted">Selecciona un parqueadero disponible y el rango horario.</div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <select
+                  data-testid="parking-amenity"
+                  value={parkingAmenityId}
+                  onChange={(e) => setParkingAmenityId(e.target.value)}
+                  className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-sm text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                >
+                  <option value="">— Parqueadero —</option>
+                  {parkings.map((p) => (
+                    <option key={p._id} value={p._id}>
+                      {p.code}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  data-testid="parking-start"
+                  type="datetime-local"
+                  value={parkingStart}
+                  onChange={(e) => setParkingStart(e.target.value)}
+                  min={formatLocalDateTime(new Date())}
+                  className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-sm text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                />
+                <input
+                  data-testid="parking-end"
+                  type="datetime-local"
+                  value={parkingEnd}
+                  onChange={(e) => setParkingEnd(e.target.value)}
+                  min={parkingStart || formatLocalDateTime(new Date())}
+                  className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-sm text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                />
+              </div>
+              <div>
+                <Button data-testid="parking-reserve" disabled={loading} onClick={reserveParking}>
+                  Reservar y pagar
+                </Button>
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <div className="mb-3 text-base font-semibold text-app-text">Mis reservas de parqueadero</div>
+            <div className="overflow-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="text-app-muted">
+                  <tr>
+                    <th className="py-3">Parqueadero</th>
+                    <th className="py-3">Inicio</th>
+                    <th className="py-3">Fin</th>
+                    <th className="py-3">Valor</th>
+                    <th className="py-3">Estado</th>
+                    <th className="py-3 text-right">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reservations
+                    .filter((r) => r.amenity_type === "visitor_parking")
+                    .map((r) => (
+                      <tr key={r._id} className="border-t border-app-border">
+                        <td className="py-3">{r.amenity_code}</td>
+                        <td className="py-3">{new Date(r.start_at).toLocaleString("es-CO")}</td>
+                        <td className="py-3">{new Date(r.end_at).toLocaleString("es-CO")}</td>
+                        <td className="py-3">${r.amount_cop.toLocaleString("es-CO")}</td>
+                        <td className="py-3">{r.status}</td>
+                        <td className="py-3 text-right">
+                          <div className="flex flex-wrap justify-end gap-2">
+                            {r.status === "Pendiente" && (
+                              <>
+                                <Button disabled={loading} onClick={() => pay("reservation", r._id)} className="px-3 py-1 text-xs">
+                                  Pagar
+                                </Button>
+                                <button
+                                  type="button"
+                                  className="text-xs text-app-danger-text hover:opacity-80"
+                                  onClick={() => cancelReservation(r._id)}
+                                >
+                                  Cancelar
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  {reservations.filter((r) => r.amenity_type === "visitor_parking").length === 0 && (
+                    <tr>
+                      <td className="py-4 text-app-muted" colSpan={6}>
+                        Sin reservas aún.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
         </div>
-      </Card>
+      )}
+
+      {tab === "salon" && (
+        <div className="space-y-6">
+          <Card>
+            <div className="space-y-4">
+              <div>
+                <div className="text-base font-semibold text-app-text">Reservar salón comunal</div>
+                <div className="text-sm text-app-muted">Reserva por día calendario.</div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <select
+                  data-testid="hall-amenity"
+                  value={hallAmenityId}
+                  onChange={(e) => setHallAmenityId(e.target.value)}
+                  className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-sm text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                >
+                  <option value="">— Salón —</option>
+                  {halls.map((h) => (
+                    <option key={h._id} value={h._id}>
+                      {h.code}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  data-testid="hall-date"
+                  type="date"
+                  value={hallDate}
+                  onChange={(e) => setHallDate(e.target.value)}
+                  className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-sm text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                />
+              </div>
+              <div>
+                <Button data-testid="hall-reserve" disabled={loading} onClick={reserveHall}>
+                  Reservar y pagar
+                </Button>
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <div className="mb-3 text-base font-semibold text-app-text">Mis reservas del salón</div>
+            <div className="overflow-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="text-app-muted">
+                  <tr>
+                    <th className="py-3">Salón</th>
+                    <th className="py-3">Fecha</th>
+                    <th className="py-3">Valor</th>
+                    <th className="py-3">Estado</th>
+                    <th className="py-3 text-right">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reservations
+                    .filter((r) => r.amenity_type === "social_hall")
+                    .map((r) => (
+                      <tr key={r._id} className="border-t border-app-border">
+                        <td className="py-3">{r.amenity_code}</td>
+                        <td className="py-3">{new Date(r.start_at).toLocaleDateString("es-CO")}</td>
+                        <td className="py-3">${r.amount_cop.toLocaleString("es-CO")}</td>
+                        <td className="py-3">{r.status}</td>
+                        <td className="py-3 text-right">
+                          <div className="flex flex-wrap justify-end gap-2">
+                            {r.status === "Pendiente" && (
+                              <>
+                                <Button disabled={loading} onClick={() => pay("reservation", r._id)} className="px-3 py-1 text-xs">
+                                  Pagar
+                                </Button>
+                                <button
+                                  type="button"
+                                  className="text-xs text-app-danger-text hover:opacity-80"
+                                  onClick={() => cancelReservation(r._id)}
+                                >
+                                  Cancelar
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  {reservations.filter((r) => r.amenity_type === "social_hall").length === 0 && (
+                    <tr>
+                      <td className="py-4 text-app-muted" colSpan={5}>
+                        Sin reservas aún.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {tab === "gimnasio" && (
+        <div className="space-y-6">
+          <Card>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-base font-semibold text-app-text">Gimnasio — periodo {period}</div>
+                <div className="text-sm text-app-muted">
+                  {gymCurrent
+                    ? gymCurrent.status === "Pagada"
+                      ? "Ya está pagada para este mes."
+                      : `Suscripción creada por $${gymCurrent.amount_cop.toLocaleString("es-CO")}. Pendiente de pago.`
+                    : "Aún no tienes suscripción para este mes."}
+                </div>
+              </div>
+              <Button
+                data-testid="gym-subscribe"
+                disabled={loading || gymCurrent?.status === "Pagada"}
+                onClick={subscribeGymAndPay}
+              >
+                {gymCurrent?.status === "Pagada" ? "Pagada" : gymCurrent ? "Pagar" : "Suscribirme y pagar"}
+              </Button>
+            </div>
+          </Card>
+
+          <Card>
+            <div className="mb-3 text-base font-semibold text-app-text">Historial</div>
+            <div className="overflow-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="text-app-muted">
+                  <tr>
+                    <th className="py-3">Periodo</th>
+                    <th className="py-3">Valor</th>
+                    <th className="py-3">Estado</th>
+                    <th className="py-3 text-right">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gymSubs.map((s) => (
+                    <tr key={s._id} className="border-t border-app-border">
+                      <td className="py-3">{s.period}</td>
+                      <td className="py-3">${s.amount_cop.toLocaleString("es-CO")}</td>
+                      <td className="py-3">{s.status}</td>
+                      <td className="py-3 text-right">
+                        {s.status === "Pendiente" && (
+                          <Button disabled={loading} onClick={() => pay("gym_subscription", s._id)} className="px-3 py-1 text-xs">
+                            Pagar
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {gymSubs.length === 0 && (
+                    <tr>
+                      <td className="py-4 text-app-muted" colSpan={4}>
+                        Sin suscripciones aún.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
 
       <Card>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
-            <div className="text-base font-semibold text-white">Proceso (API)</div>
+            <div className="text-base font-semibold text-app-text">Proceso (API)</div>
             <div className="text-sm text-app-muted">Registro de llamadas y respuestas más recientes.</div>
           </div>
           <button
             type="button"
-            className="shrink-0 rounded-xl border border-app-border bg-app-elevated px-4 py-2 text-sm text-white/90 hover:bg-white/10"
+            className="shrink-0 rounded-xl border border-app-border bg-app-elevated px-4 py-2 text-sm text-app-text hover:bg-app-elevated"
             onClick={() => setShowProcess((v) => !v)}
           >
             {showProcess ? "Ocultar" : "Mostrar"}
@@ -282,16 +739,16 @@ export default function ResidentDashboard() {
         {showProcess && (
           <div className="mt-5 space-y-3 text-sm">
             {steps.length === 0 && (
-              <div className="text-app-muted">Aún no hay acciones. Dale “Pagar” o descarga PDF/XML.</div>
+              <div className="text-app-muted">Aún no hay acciones. Reserva, paga o descarga PDF/XML.</div>
             )}
             {steps.map((s, idx) => (
               <div key={idx} className="rounded-xl border border-app-border bg-app-surface px-4 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="font-semibold text-white">{s.title}</div>
+                  <div className="font-semibold text-app-text">{s.title}</div>
                   <div className="text-xs text-app-muted">{s.at}</div>
                 </div>
                 {s.detail && (
-                  <pre className="mt-2 whitespace-pre-wrap break-words text-sm text-white/90">{s.detail}</pre>
+                  <pre className="mt-2 whitespace-pre-wrap break-words text-sm text-app-text">{s.detail}</pre>
                 )}
               </div>
             ))}
@@ -301,4 +758,3 @@ export default function ResidentDashboard() {
     </div>
   );
 }
-

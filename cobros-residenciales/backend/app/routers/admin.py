@@ -232,6 +232,26 @@ async def seed_demo():
     # Generate invoices for current month
     await generate_invoices(period=None)
 
+    # Amenidades demo: parqueaderos de visitantes y salón comunal
+    async def ensure_amenity(code: str, atype: str) -> str:
+        a = await mongo.db.amenities.find_one({"code": code})
+        if a:
+            return a["_id"]
+        adoc = {
+            "_id": new_id(),
+            "type": atype,
+            "code": code,
+            "active": True,
+            "created_at": now,
+        }
+        await mongo.db.amenities.insert_one(adoc)
+        return adoc["_id"]
+
+    await ensure_amenity("VIS-01", "visitor_parking")
+    await ensure_amenity("VIS-02", "visitor_parking")
+    await ensure_amenity("VIS-03", "visitor_parking")
+    await ensure_amenity("SALON-A", "social_hall")
+
     return {
         "created": True,
         "admin": {"email": admin_email, "password": admin_pwd, "user_id": admin_id},
@@ -239,6 +259,6 @@ async def seed_demo():
             {"email": r["email"], "password": r["password"], "user_id": resident_ids[r["email"]], "full_name": r["full_name"]}
             for r in demo_residents
         ],
-        "notes": "Si ya existían, se reutilizan y se actualizan contraseñas/roles. Crea varias unidades asignadas y algunas sin asignar.",
+        "notes": "Si ya existían, se reutilizan y se actualizan contraseñas/roles. Crea unidades, residentes, facturas del mes, parqueaderos VIS-01..03 y salón SALON-A.",
     }
 

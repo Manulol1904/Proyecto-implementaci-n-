@@ -43,6 +43,86 @@ def health():
     return {"status": "ok"}
 
 
+PAID_STATUS = {
+    "invoice": "Pagada",
+    "reservation": "Pagada",
+    "gym_subscription": "Pagada",
+}
+
+
+def _resolve_target(kind: str, target_id: str, user: dict) -> dict:
+    """
+    Resuelve el documento destino del pago: amount_cop, current_status y doc.
+    Aplica ownership según rol.
+    """
+    if mongo.db is None:
+        raise HTTPException(status_code=400, detail="DB not ready")
+
+    if kind == "invoice":
+        inv = mongo.db.invoices.find_one({"_id": target_id})
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        if inv.get("status") == "Pagada":
+            raise HTTPException(status_code=400, detail="Invoice already paid")
+        if user.get("role") == "resident":
+            unit = mongo.db.units.find_one({"_id": inv.get("unit_id")})
+            if not unit or unit.get("resident_user_id") != user.get("_id"):
+                raise HTTPException(status_code=403, detail="Not allowed to pay this invoice")
+        return {"amount_cop": int(inv.get("amount_cop", 0)), "current_status": inv.get("status"), "doc": inv}
+
+    if kind == "reservation":
+        r = mongo.db.reservations.find_one({"_id": target_id})
+        if not r:
+            raise HTTPException(status_code=404, detail="Reservation not found")
+        if r.get("status") == "Pagada":
+            raise HTTPException(status_code=400, detail="Reservation already paid")
+        if r.get("status") == "Cancelada":
+            raise HTTPException(status_code=400, detail="Reservation is canceled")
+        if user.get("role") == "resident" and r.get("user_id") != user.get("_id"):
+            raise HTTPException(status_code=403, detail="Not allowed to pay this reservation")
+        return {"amount_cop": int(r.get("amount_cop", 0)), "current_status": r.get("status"), "doc": r}
+
+    if kind == "gym_subscription":
+        s = mongo.db.gym_subscriptions.find_one({"_id": target_id})
+        if not s:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        if s.get("status") == "Pagada":
+            raise HTTPException(status_code=400, detail="Subscription already paid")
+        if user.get("role") == "resident" and s.get("user_id") != user.get("_id"):
+            raise HTTPException(status_code=403, detail="Not allowed to pay this subscription")
+        return {"amount_cop": int(s.get("amount_cop", 0)), "current_status": s.get("status"), "doc": s}
+
+    raise HTTPException(status_code=400, detail=f"Unsupported target_kind: {kind}")
+
+
+def _mark_target_paid(kind: str, target_id: str, paid_at: datetime) -> None:
+    """Marca el documento destino como Pagado según su tipo."""
+    if mongo.db is None:
+        return
+    new_status = PAID_STATUS.get(kind, "Pagada")
+    if kind == "invoice":
+        mongo.db.invoices.update_one(
+            {"_id": target_id},
+            {"$set": {"status": new_status, "paid_at": paid_at}},
+        )
+    elif kind == "reservation":
+        mongo.db.reservations.update_one(
+            {"_id": target_id},
+            {"$set": {"status": new_status, "paid_at": paid_at}},
+        )
+    elif kind == "gym_subscription":
+        mongo.db.gym_subscriptions.update_one(
+            {"_id": target_id},
+            {"$set": {"status": new_status, "paid_at": paid_at}},
+        )
+
+
+def _payment_target(payment: dict) -> tuple[str, str]:
+    kind = payment.get("target_kind") or "invoice"
+    tid = payment.get("target_id") or payment.get("invoice_id") or ""
+    return kind, tid
+
+
 @app.post("/payments", response_model=PaymentCreated)
 def create_payment(payload: PaymentCreate, request: Request):
     if mongo.db is None:
@@ -50,17 +130,13 @@ def create_payment(payload: PaymentCreate, request: Request):
 
     user = _require_user(request)
 
-    inv = mongo.db.invoices.find_one({"_id": payload.invoice_id})
-    if not inv:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    if inv.get("status") == "Pagada":
-        raise HTTPException(status_code=400, detail="Invoice already paid")
+    target_kind = payload.target_kind or "invoice"
+    target_id = payload.target_id or payload.invoice_id or ""
+    if not target_id:
+        raise HTTPException(status_code=400, detail="Missing target_id/invoice_id")
 
-    # Ownership: resident can only pay invoices from their assigned units
-    if user.get("role") == "resident":
-        unit = mongo.db.units.find_one({"_id": inv.get("unit_id")})
-        if not unit or unit.get("resident_user_id") != user.get("_id"):
-            raise HTTPException(status_code=403, detail="Not allowed to pay this invoice")
+    resolved = _resolve_target(target_kind, target_id, user)
+    amount_cop = int(resolved["amount_cop"])
 
     # Provider is server-side configuration (avoid client spoofing).
     # In dev/demo we allow UI to choose provider for testing.
@@ -69,7 +145,7 @@ def create_payment(payload: PaymentCreate, request: Request):
         provider = requested
     else:
         provider = (settings.payments_provider or "mock").lower()
-    payment_id = f"pay_{provider}_{int(datetime.now(timezone.utc).timestamp())}_{payload.invoice_id[:8]}"
+    payment_id = f"pay_{provider}_{int(datetime.now(timezone.utc).timestamp())}_{target_id[:8]}"
 
     origin = request.headers.get("origin") or "http://localhost:5173"
 
@@ -77,14 +153,14 @@ def create_payment(payload: PaymentCreate, request: Request):
     provider_ref: str | None = None
     if provider == "wompi":
         payment_link, provider_ref = _create_wompi_payment_link(
-            invoice_id=payload.invoice_id,
-            amount_cop=int(inv.get("amount_cop", 0)),
+            invoice_id=target_id,
+            amount_cop=amount_cop,
             origin=origin,
         )
     elif provider == "epayco":
         payment_link, provider_ref = _create_epayco_session(
-            invoice_id=payload.invoice_id,
-            amount_cop=int(inv.get("amount_cop", 0)),
+            invoice_id=target_id,
+            amount_cop=amount_cop,
         )
     else:
         # En mock: el "payment link" solo apunta a un endpoint del mismo servicio para simular confirmación.
@@ -92,34 +168,42 @@ def create_payment(payload: PaymentCreate, request: Request):
 
     doc = {
         "_id": payment_id,
-        "invoice_id": payload.invoice_id,
+        "invoice_id": target_id if target_kind == "invoice" else None,
+        "target_kind": target_kind,
+        "target_id": target_id,
         "provider": provider,
         "provider_ref": provider_ref,
         "status": "created",
-        "amount_cop": int(inv.get("amount_cop", 0)),
+        "amount_cop": amount_cop,
         "currency": "COP",
         "payment_link": payment_link,
-        "raw_event": None,
+        "raw_event": {
+            "reference": target_id,
+            "target_kind": target_kind,
+            "target_id": target_id,
+            "created_by_user_id": user.get("_id"),
+        },
         "created_at": datetime.now(timezone.utc),
         "confirmed_at": None,
     }
-    # para mapeo por referencia
-    doc["raw_event"] = {"reference": payload.invoice_id, "created_by_user_id": user.get("_id")}
     mongo.db.payments.insert_one(doc)
 
     log.info(
         "payment_created",
         payment_id=payment_id,
-        invoice_id=payload.invoice_id,
+        target_kind=target_kind,
+        target_id=target_id,
         provider=provider,
         provider_ref=provider_ref,
     )
 
     return PaymentCreated(
         payment_id=payment_id,
-        invoice_id=payload.invoice_id,
+        invoice_id=target_id if target_kind == "invoice" else None,
+        target_kind=target_kind,
+        target_id=target_id,
         provider=provider,
-        amount_cop=doc["amount_cop"],
+        amount_cop=amount_cop,
         payment_link=payment_link,
     )
 
@@ -134,11 +218,21 @@ def get_payment(payment_id: str, request: Request):
     if not p:
         raise HTTPException(status_code=404, detail="Payment not found")
 
-    # Ownership: resident can only view payments for their invoices
+    # Ownership por target_kind
     if user.get("role") == "resident":
-        inv = mongo.db.invoices.find_one({"_id": p.get("invoice_id")})
-        unit = mongo.db.units.find_one({"_id": (inv or {}).get("unit_id")}) if inv else None
-        if not unit or unit.get("resident_user_id") != user.get("_id"):
+        kind, tid = _payment_target(p)
+        owned = False
+        if kind == "invoice":
+            inv = mongo.db.invoices.find_one({"_id": tid})
+            unit = mongo.db.units.find_one({"_id": (inv or {}).get("unit_id")}) if inv else None
+            owned = bool(unit and unit.get("resident_user_id") == user.get("_id"))
+        elif kind == "reservation":
+            r = mongo.db.reservations.find_one({"_id": tid})
+            owned = bool(r and r.get("user_id") == user.get("_id"))
+        elif kind == "gym_subscription":
+            s = mongo.db.gym_subscriptions.find_one({"_id": tid})
+            owned = bool(s and s.get("user_id") == user.get("_id"))
+        if not owned:
             raise HTTPException(status_code=403, detail="Not allowed")
 
     return PaymentPublic(**p)
@@ -181,23 +275,21 @@ def webhook(provider: str, event: WebhookEvent):
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
 
+    kind, tid = _payment_target(payment)
     if event.status.lower() in {"approved", "paid", "success", "confirmed"}:
         now = datetime.now(timezone.utc)
         mongo.db.payments.update_one(
             {"_id": payment["_id"]},
             {"$set": {"status": "confirmed", "confirmed_at": now, "raw_event": event.raw}},
         )
-        mongo.db.invoices.update_one(
-            {"_id": payment["invoice_id"]},
-            {"$set": {"status": "Pagada", "paid_at": now}},
-        )
-        log.info("payment_confirmed", payment_id=str(payment["_id"]), invoice_id=payment["invoice_id"])
+        _mark_target_paid(kind, tid, now)
+        log.info("payment_confirmed", payment_id=str(payment["_id"]), target_kind=kind, target_id=tid)
     else:
         mongo.db.payments.update_one(
             {"_id": payment["_id"]},
             {"$set": {"status": "failed", "raw_event": event.raw}},
         )
-        log.info("payment_failed", payment_id=str(payment["_id"]), invoice_id=payment["invoice_id"])
+        log.info("payment_failed", payment_id=str(payment["_id"]), target_kind=kind, target_id=tid)
 
     return {"ok": True}
 
@@ -240,16 +332,14 @@ async def wompi_webhook(request: Request):
         {"$set": {"raw_event": body, "provider_ref": payment.get("provider_ref") or payment_link_id}},
     )
 
+    kind, tid = _payment_target(payment)
     if status in {"APPROVED"}:
         mongo.db.payments.update_one(
             {"_id": payment["_id"]},
             {"$set": {"status": "confirmed", "confirmed_at": now}},
         )
-        mongo.db.invoices.update_one(
-            {"_id": payment["invoice_id"]},
-            {"$set": {"status": "Pagada", "paid_at": now}},
-        )
-        log.info("wompi_payment_approved", payment_id=str(payment["_id"]), invoice_id=payment["invoice_id"])
+        _mark_target_paid(kind, tid, now)
+        log.info("wompi_payment_approved", payment_id=str(payment["_id"]), target_kind=kind, target_id=tid)
     elif status in {"DECLINED", "ERROR", "VOIDED"}:
         mongo.db.payments.update_one(
             {"_id": payment["_id"]},
@@ -279,10 +369,8 @@ def mock_confirm(payment_id: str):
         {"_id": payment_id},
         {"$set": {"status": "confirmed", "confirmed_at": now, "raw_event": {"mock": True}}},
     )
-    mongo.db.invoices.update_one(
-        {"_id": payment["invoice_id"]},
-        {"$set": {"status": "Pagada", "paid_at": now}},
-    )
+    kind, tid = _payment_target(payment)
+    _mark_target_paid(kind, tid, now)
     return {"ok": True}
 
 
@@ -325,13 +413,15 @@ async def epayco_confirmation(request: Request):
     ):
         raise HTTPException(status_code=401, detail="Invalid epayco signature")
 
-    # Intentar mapear a factura usando invoice id en x_extra1 o factura
-    invoice_id = data.get("x_extra1") or data.get("x_id_invoice") or data.get("factura") or data.get("invoice") or ""
+    # Intentar mapear el pago: por provider_ref o por target_id (en x_extra1 puede venir invoice/reservation/sub).
+    target_hint = data.get("x_extra1") or data.get("x_id_invoice") or data.get("factura") or data.get("invoice") or ""
     payment = None
     if x_ref_payco:
         payment = mongo.db.payments.find_one({"provider": "epayco", "provider_ref": x_ref_payco})
-    if not payment and invoice_id:
-        payment = mongo.db.payments.find_one({"provider": "epayco", "invoice_id": invoice_id})
+    if not payment and target_hint:
+        payment = mongo.db.payments.find_one(
+            {"provider": "epayco", "$or": [{"target_id": target_hint}, {"invoice_id": target_hint}]}
+        )
 
     if not payment:
         log.warning("epayco_event_unmapped", x_ref_payco=x_ref_payco, invoice_id=invoice_id)
@@ -343,15 +433,13 @@ async def epayco_confirmation(request: Request):
         {"$set": {"raw_event": data, "provider_ref": x_ref_payco}},
     )
 
+    kind, tid = _payment_target(payment)
     if x_response.lower() == "aceptada":
         mongo.db.payments.update_one(
             {"_id": payment["_id"]},
             {"$set": {"status": "confirmed", "confirmed_at": now}},
         )
-        mongo.db.invoices.update_one(
-            {"_id": payment["invoice_id"]},
-            {"$set": {"status": "Pagada", "paid_at": now}},
-        )
+        _mark_target_paid(kind, tid, now)
     elif x_response.lower() in {"rechazada", "fallida"}:
         mongo.db.payments.update_one({"_id": payment["_id"]}, {"$set": {"status": "failed"}})
 

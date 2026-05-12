@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
 import { backend } from "../../lib/api";
+import { useSection, type AdminSection } from "../../lib/section";
 
 type Dashboard = {
   total_recaudado_cop: number;
@@ -31,11 +32,44 @@ type MorosidadRow = {
   last_due_date?: string | null;
 };
 
-type Section = "usuarios" | "unidades" | "facturas";
+type Section = AdminSection;
 
-const CHART_CYAN = "#00f2ff";
-const CHART_AMBER = "#fbbf24";
-const CHART_EMERALD = "#34d399";
+type Amenity = {
+  _id: string;
+  type: "visitor_parking" | "social_hall";
+  code: string;
+  active: boolean;
+};
+
+type Reservation = {
+  _id: string;
+  amenity_id: string;
+  amenity_type: "visitor_parking" | "social_hall";
+  amenity_code: string;
+  user_id: string;
+  start_at: string;
+  end_at: string;
+  amount_cop: number;
+  status: "Pendiente" | "Pagada" | "Cancelada";
+  paid_at?: string | null;
+};
+
+type GymSubscription = {
+  _id: string;
+  user_id: string;
+  period: string;
+  amount_cop: number;
+  status: "Pendiente" | "Pagada";
+  paid_at?: string | null;
+};
+
+/**
+ * Chart palette — read live from CSS variables so it follows light/dark theme.
+ * The values are defined in `src/styles.css` under :root and html.dark.
+ */
+const CHART_CYAN = "rgb(var(--chart-primary))";
+const CHART_AMBER = "rgb(var(--chart-warning))";
+const CHART_EMERALD = "rgb(var(--chart-success))";
 
 function MiniChart({
   title,
@@ -63,11 +97,11 @@ function MiniChart({
   return (
     <div className="space-y-3">
       <div>
-        <div className="text-sm font-semibold text-white">{title}</div>
+        <div className="text-sm font-semibold text-app-text">{title}</div>
         {subtitle && <div className="mt-1 text-xs text-app-muted">{subtitle}</div>}
       </div>
 
-      <div className="rounded-xl border border-app-border bg-app-surface/60 p-3">
+      <div className="rounded-xl border border-app-border bg-app-elevated p-3">
         <svg
           viewBox={`0 0 ${vbW} ${vbH}`}
           width="100%"
@@ -99,7 +133,7 @@ function MiniChart({
                   x={x + barW / 2}
                   y={padT + innerH + 18}
                   textAnchor="middle"
-                  fill="#c7d7ef"
+                  style={{ fill: "rgb(var(--app-muted))" }}
                   fontSize="11"
                 >
                   {it.label}
@@ -108,7 +142,7 @@ function MiniChart({
                   x={x + barW / 2}
                   y={padT + innerH + 30}
                   textAnchor="middle"
-                  fill="#ffffff"
+                  style={{ fill: "rgb(var(--app-text))" }}
                   fontSize="12"
                   fontWeight="700"
                 >
@@ -165,7 +199,24 @@ export default function AdminDashboard() {
   const [appliedInvoiceStatus, setAppliedInvoiceStatus] = useState("");
   const [appliedInvoicePeriod, setAppliedInvoicePeriod] = useState("");
   const [invoiceFilterError, setInvoiceFilterError] = useState<string | null>(null);
-  const [section, setSection] = useState<Section>("facturas");
+  /** Sección activa controlada desde el sidebar (vía SectionContext). */
+  const { section: sectionRaw, setSection: setSectionRaw } = useSection();
+  const section = sectionRaw as Section;
+  const setSection = (s: Section) => setSectionRaw(s);
+
+  const [amenities, setAmenities] = useState<Amenity[]>([]);
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [gymSubs, setGymSubs] = useState<GymSubscription[]>([]);
+  const [newAmenityType, setNewAmenityType] = useState<"visitor_parking" | "social_hall">("visitor_parking");
+  const [newAmenityCode, setNewAmenityCode] = useState("");
+  const [resStatusFilter, setResStatusFilter] = useState<string>("");
+  const [resTypeFilter, setResTypeFilter] = useState<string>("");
+  const [gymPeriodFilter, setGymPeriodFilter] = useState<string>("");
+  /**
+   * `busyId` identifica la fila puntual en operación (ej. una amenidad o reserva).
+   * Permite deshabilitar solo el botón pulsado sin bloquear toda la UI con `creating`.
+   */
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   function formatApiDetail(detail: unknown): string {
     if (typeof detail === "string") return detail;
@@ -218,20 +269,178 @@ export default function AdminDashboard() {
     setError(null);
     setInvoiceFilterError(null);
     try {
-      const [d, u, inv, r] = await Promise.all([
+      const [d, u, inv, r, am, res, gym] = await Promise.all([
         backend.get("/reports/dashboard"),
         backend.get("/units"),
         backend.get("/invoices"),
         backend.get("/admin/users", { params: { role: "resident" } }),
+        backend.get("/amenities"),
+        backend.get("/reservations"),
+        backend.get("/gym/subscriptions"),
       ]);
       setDash(d.data);
       setUnits(u.data);
       setInvoices(Array.isArray(inv.data) ? inv.data : []);
       setResidents(r.data);
+      setAmenities(Array.isArray(am.data) ? am.data : []);
+      setReservations(Array.isArray(res.data) ? res.data : []);
+      setGymSubs(Array.isArray(gym.data) ? gym.data : []);
     } catch (e: any) {
       const msg = formatApiDetail(e?.response?.data?.detail);
       setError(msg);
     }
+  }
+
+  /**
+   * Refrescos selectivos: solo recargan la colección modificada,
+   * para evitar disparar 7 GETs por cada acción y que la UI se sienta congelada.
+   */
+  async function refreshAmenities() {
+    try {
+      const r = await backend.get("/amenities");
+      setAmenities(Array.isArray(r.data) ? r.data : []);
+    } catch (e: any) {
+      setError(formatApiDetail(e?.response?.data?.detail));
+    }
+  }
+
+  async function refreshReservations() {
+    try {
+      const r = await backend.get("/reservations");
+      setReservations(Array.isArray(r.data) ? r.data : []);
+    } catch (e: any) {
+      setError(formatApiDetail(e?.response?.data?.detail));
+    }
+  }
+
+  async function refreshGymSubs() {
+    try {
+      const r = await backend.get("/gym/subscriptions");
+      setGymSubs(Array.isArray(r.data) ? r.data : []);
+    } catch (e: any) {
+      setError(formatApiDetail(e?.response?.data?.detail));
+    }
+  }
+
+  async function createAmenity() {
+    const code = newAmenityCode.trim().toUpperCase();
+    if (!code) {
+      setError("Debes ingresar el código de la amenidad.");
+      return;
+    }
+    setCreating(true);
+    setError(null);
+    setInfo(null);
+    try {
+      await backend.post("/amenities", { type: newAmenityType, code, active: true });
+      setInfo(`Amenidad creada: ${code}`);
+      setNewAmenityCode("");
+      await refreshAmenities();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo crear la amenidad");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function toggleAmenity(a: Amenity) {
+    if (busyId) return;
+    setBusyId(a._id);
+    setError(null);
+    setInfo(null);
+    try {
+      await backend.patch(`/amenities/${a._id}`, { active: !a.active });
+      await refreshAmenities();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo actualizar la amenidad");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function deleteAmenity(id: string) {
+    if (busyId) return;
+    if (!confirm("¿Eliminar amenidad? Se borran sus reservas no pagadas.")) return;
+    setBusyId(id);
+    setError(null);
+    setInfo(null);
+    try {
+      await backend.delete(`/amenities/${id}`);
+      setInfo("Amenidad eliminada.");
+      await Promise.all([refreshAmenities(), refreshReservations()]);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo eliminar la amenidad");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function cancelReservation(id: string) {
+    if (busyId) return;
+    if (!confirm("¿Cancelar reserva?")) return;
+    setBusyId(id);
+    setError(null);
+    setInfo(null);
+    try {
+      await backend.post(`/reservations/${id}/cancel`);
+      setInfo("Reserva cancelada.");
+      await refreshReservations();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo cancelar");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function deleteReservation(id: string) {
+    if (busyId) return;
+    if (!confirm("¿Eliminar reserva definitivamente?")) return;
+    setBusyId(id);
+    setError(null);
+    setInfo(null);
+    try {
+      await backend.delete(`/reservations/${id}`);
+      setInfo("Reserva eliminada.");
+      await refreshReservations();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo eliminar");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function deleteGymSub(id: string) {
+    if (busyId) return;
+    if (!confirm("¿Eliminar suscripción de gimnasio?")) return;
+    setBusyId(id);
+    setError(null);
+    setInfo(null);
+    try {
+      await backend.delete(`/gym/subscriptions/${id}`);
+      setInfo("Suscripción eliminada.");
+      await refreshGymSubs();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "No se pudo eliminar");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const visibleReservations = useMemo(() => {
+    return reservations.filter((r) => {
+      if (resStatusFilter && r.status !== resStatusFilter) return false;
+      if (resTypeFilter && r.amenity_type !== resTypeFilter) return false;
+      return true;
+    });
+  }, [reservations, resStatusFilter, resTypeFilter]);
+
+  const visibleGymSubs = useMemo(() => {
+    return gymSubs.filter((s) => (gymPeriodFilter ? s.period === gymPeriodFilter : true));
+  }, [gymSubs, gymPeriodFilter]);
+
+  function residentLabel(userId: string): string {
+    const u = residents.find((x) => x._id === userId);
+    return u ? `${u.full_name} (${u.email})` : userId.slice(0, 10) + "…";
   }
 
   useEffect(() => {
@@ -559,49 +768,45 @@ export default function AdminDashboard() {
     }
   }
 
+  const SECTION_META: Record<Section, { title: string; subtitle: string }> = {
+    facturas: {
+      title: "Facturas",
+      subtitle: "Cobros del mes, morosidad y métricas del conjunto.",
+    },
+    usuarios: {
+      title: "Usuarios",
+      subtitle: "Residentes y administradores registrados en el sistema.",
+    },
+    unidades: {
+      title: "Unidades",
+      subtitle: "Inmuebles del conjunto y coeficientes de copropiedad.",
+    },
+    amenidades: {
+      title: "Amenidades",
+      subtitle: "Parqueaderos de visitantes y salón comunal disponibles para reserva.",
+    },
+    reservas: {
+      title: "Reservas",
+      subtitle: "Historial de reservas pagadas, pendientes y canceladas.",
+    },
+    gimnasio: {
+      title: "Gimnasio",
+      subtitle: "Suscripciones mensuales activas y vencidas.",
+    },
+  };
+  const meta = SECTION_META[section];
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-2">
-          <h2 data-testid="admin-dashboard-title" className="text-xl font-bold tracking-tight text-app-cyan sm:text-2xl">
-            Dashboard administrador
+          <h2 data-testid="admin-dashboard-title" className="text-xl font-bold tracking-tight text-app-text sm:text-2xl">
+            {meta.title}
           </h2>
-          <p className="max-w-2xl text-sm text-app-muted">
-            Elige una sección para trabajar sin que todo se vea amontonado.
-          </p>
+          <p className="max-w-2xl text-sm text-app-muted">{meta.subtitle}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center rounded-2xl border border-app-border bg-app-surface p-1">
-            <button
-              type="button"
-              onClick={() => setSection("usuarios")}
-              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                section === "usuarios" ? "bg-app-cyan text-[#0a1628]" : "text-white/85 hover:bg-white/10"
-              }`}
-            >
-              Usuarios
-            </button>
-            <button
-              type="button"
-              onClick={() => setSection("unidades")}
-              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                section === "unidades" ? "bg-app-cyan text-[#0a1628]" : "text-white/85 hover:bg-white/10"
-              }`}
-            >
-              Unidades
-            </button>
-            <button
-              type="button"
-              onClick={() => setSection("facturas")}
-              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                section === "facturas" ? "bg-app-cyan text-[#0a1628]" : "text-white/85 hover:bg-white/10"
-              }`}
-            >
-              Facturas
-            </button>
-          </div>
-
           {section === "facturas" && (
             <Button onClick={generateNow} disabled={creating || units.length === 0}>
               Generar cobros (mes actual)
@@ -609,24 +814,18 @@ export default function AdminDashboard() {
           )}
           {section === "usuarios" && (
             <Button
-              onClick={() => {
-                setSection("usuarios");
-                setShowResidents(true);
-              }}
+              onClick={() => setShowResidents(true)}
               disabled={creating}
-              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10"
+              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
             >
               Gestionar residentes
             </Button>
           )}
           {section === "unidades" && (
             <Button
-              onClick={() => {
-                setSection("unidades");
-                setShowNewUnit(true);
-              }}
+              onClick={() => setShowNewUnit(true)}
               disabled={creating}
-              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10"
+              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
             >
               Nueva unidad
             </Button>
@@ -646,38 +845,38 @@ export default function AdminDashboard() {
         <Card>
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">Residentes</h3>
-            <button className="text-xs text-white/85 hover:text-app-cyan" onClick={() => setShowResidents(false)}>
+            <button className="text-xs text-app-text hover:text-app-cyan" onClick={() => setShowResidents(false)}>
               Cerrar
             </button>
           </div>
 
           <div className="mt-5 grid gap-4 md:grid-cols-4">
             <div className="md:col-span-1">
-              <label className="text-xs text-white/85">Nombre</label>
+              <label className="text-xs text-app-text">Nombre</label>
               <input
                 value={newResidentName}
                 onChange={(e) => setNewResidentName(e.target.value)}
                 placeholder="Juan Pérez"
-                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-white outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-app-text outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
               />
             </div>
             <div className="md:col-span-1">
-              <label className="text-xs text-white/85">Email</label>
+              <label className="text-xs text-app-text">Email</label>
               <input
                 value={newResidentEmail}
                 onChange={(e) => setNewResidentEmail(e.target.value)}
                 placeholder="juan@correo.com"
-                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-white outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-app-text outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
               />
             </div>
             <div className="md:col-span-1">
-              <label className="text-xs text-white/85">Contraseña</label>
+              <label className="text-xs text-app-text">Contraseña</label>
               <input
                 value={newResidentPassword}
                 onChange={(e) => setNewResidentPassword(e.target.value)}
                 placeholder="Residente123!"
                 type="password"
-                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-white outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-app-text outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
               />
             </div>
             <div className="md:col-span-1 flex items-end">
@@ -706,7 +905,7 @@ export default function AdminDashboard() {
                         <input
                           value={editResidentName}
                           onChange={(e) => setEditResidentName(e.target.value)}
-                          className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                          className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
                         />
                       ) : (
                         u.full_name
@@ -717,7 +916,7 @@ export default function AdminDashboard() {
                         <input
                           value={editResidentEmail}
                           onChange={(e) => setEditResidentEmail(e.target.value)}
-                          className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                          className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
                         />
                       ) : (
                         u.email
@@ -741,7 +940,7 @@ export default function AdminDashboard() {
                             <Button
                               onClick={() => setEditingResidentId(null)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
                             >
                               Cancelar
                             </Button>
@@ -751,14 +950,14 @@ export default function AdminDashboard() {
                             <Button
                               onClick={() => startEditResident(u)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
                             >
                               Editar
                             </Button>
                             <Button
                               onClick={() => startEditTax(u)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
                             >
                               Fiscal
                             </Button>
@@ -768,14 +967,14 @@ export default function AdminDashboard() {
                                 setResetPwdValue("");
                               }}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
                             >
                               Clave
                             </Button>
                             <Button
                               onClick={() => deleteResident(u._id)}
                               disabled={creating}
-                              className="!bg-rose-700 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-600"
+                              className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
                             >
                               Eliminar
                             </Button>
@@ -799,15 +998,15 @@ export default function AdminDashboard() {
           {editingTaxResidentId && (
             <div className="mt-5 rounded-xl border border-app-border bg-app-surface p-4">
               <div className="flex items-center justify-between">
-                <div className="text-xs text-white/85">Perfil fiscal (Factus) — JSON</div>
-                <button className="text-xs text-white/85 hover:text-app-cyan" onClick={() => setEditingTaxResidentId(null)}>
+                <div className="text-xs text-app-text">Perfil fiscal (Factus) — JSON</div>
+                <button className="text-xs text-app-text hover:text-app-cyan" onClick={() => setEditingTaxResidentId(null)}>
                   Cerrar
                 </button>
               </div>
               <textarea
                 value={taxJson}
                 onChange={(e) => setTaxJson(e.target.value)}
-                className="mt-2 h-48 w-full rounded-xl border border-app-border bg-app-elevated px-3 py-2 text-xs font-mono text-white/90 outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                className="mt-2 h-48 w-full rounded-xl border border-app-border bg-app-elevated px-3 py-2 text-xs font-mono text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
               />
               <div className="mt-2 flex gap-2">
                 <Button onClick={saveTaxProfile} disabled={creating} className="px-3 py-1 text-xs">
@@ -819,7 +1018,7 @@ export default function AdminDashboard() {
                     setTaxJson("");
                   }}
                   disabled={creating}
-                  className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                  className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
                 >
                   Cancelar
                 </Button>
@@ -832,14 +1031,14 @@ export default function AdminDashboard() {
 
           {resetPwdResidentId && (
             <div className="mt-5 rounded-xl border border-app-border bg-app-surface p-4">
-              <div className="text-xs text-white/85">Cambiar contraseña (residente)</div>
+              <div className="text-xs text-app-text">Cambiar contraseña (residente)</div>
               <div className="mt-2 flex flex-wrap gap-2">
                 <input
                   value={resetPwdValue}
                   onChange={(e) => setResetPwdValue(e.target.value)}
                   placeholder="Nueva contraseña"
                   type="password"
-                  className="w-64 rounded-xl border border-app-border bg-app-elevated px-3 py-2 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                  className="w-64 rounded-xl border border-app-border bg-app-elevated px-3 py-2 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
                 />
                 <Button onClick={resetResidentPassword} disabled={creating} className="px-3 py-1 text-xs">
                   Guardar
@@ -847,7 +1046,7 @@ export default function AdminDashboard() {
                 <Button
                   onClick={() => setResetPwdResidentId(null)}
                   disabled={creating}
-                  className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                  className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
                 >
                   Cancelar
                 </Button>
@@ -861,27 +1060,27 @@ export default function AdminDashboard() {
         <Card>
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">Crear unidad</h3>
-            <button className="text-xs text-white/85 hover:text-app-cyan" onClick={() => setShowNewUnit(false)}>
+            <button className="text-xs text-app-text hover:text-app-cyan" onClick={() => setShowNewUnit(false)}>
               Cerrar
             </button>
           </div>
           <div className="mt-5 grid gap-4 md:grid-cols-3">
             <div className="md:col-span-1">
-              <label className="text-xs text-white/85">Código</label>
+              <label className="text-xs text-app-text">Código</label>
               <input
                 value={newUnitCode}
                 onChange={(e) => setNewUnitCode(e.target.value)}
                 placeholder="APT-101"
-                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-white outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-app-text outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
               />
             </div>
             <div className="md:col-span-1">
-              <label className="text-xs text-white/85">Coeficiente</label>
+              <label className="text-xs text-app-text">Coeficiente</label>
               <input
                 value={newUnitCoeff}
                 onChange={(e) => setNewUnitCoeff(e.target.value)}
                 placeholder="0.0123"
-                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-white outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-app-text outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
               />
             </div>
             <div className="md:col-span-1 flex items-end gap-2">
@@ -894,7 +1093,7 @@ export default function AdminDashboard() {
                   setNewUnitCoeff("");
                 }}
                 disabled={creating}
-                className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10"
+                className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
               >
                 Limpiar
               </Button>
@@ -910,7 +1109,7 @@ export default function AdminDashboard() {
         <Card>
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">Reporte de morosidad</h3>
-            <button className="text-xs text-white/85 hover:text-app-cyan" onClick={() => setShowMorosidad(false)}>
+            <button className="text-xs text-app-text hover:text-app-cyan" onClick={() => setShowMorosidad(false)}>
               Cerrar
             </button>
           </div>
@@ -929,7 +1128,7 @@ export default function AdminDashboard() {
                 {morosidad.map((m) => (
                   <tr key={m.unit_id} className="border-t border-app-border">
                     <td className="py-3">{m.unit_code ?? m.unit_id.slice(0, 8) + "…"}</td>
-                    <td className="py-3 text-white/85">{m.resident_email ?? "—"}</td>
+                    <td className="py-3 text-app-text">{m.resident_email ?? "—"}</td>
                     <td className="py-3">{m.overdue_count}</td>
                     <td className="py-3">${m.overdue_amount_cop.toLocaleString("es-CO")}</td>
                     <td className="py-3">{m.last_due_date ? new Date(m.last_due_date).toLocaleDateString("es-CO") : "—"}</td>
@@ -948,17 +1147,17 @@ export default function AdminDashboard() {
         </Card>
       )}
 
-      {units.length === 0 && section !== "usuarios" && (
-        <div className="rounded-2xl border border-amber-800/60 bg-amber-950/25 p-4 text-sm leading-relaxed text-amber-100">
+      {units.length === 0 && (section === "unidades" || section === "facturas") && (
+        <div className="rounded-2xl border border-app-warning-border bg-app-warning-bg p-4 text-sm leading-relaxed text-app-warning-text">
           Primero crea al menos 1 unidad con su coeficiente. Si no hay unidades, “Generar cobros” no crea facturas.
         </div>
       )}
 
       {error && (
-        <div className="rounded-2xl border border-rose-800/60 bg-rose-950/30 p-4 text-sm text-rose-100">{error}</div>
+        <div className="rounded-2xl border border-app-danger-border bg-app-danger-bg p-4 text-sm text-app-danger-text">{error}</div>
       )}
       {info && (
-        <div className="rounded-2xl border border-emerald-800/60 bg-emerald-950/25 p-4 text-sm text-emerald-100">{info}</div>
+        <div className="rounded-2xl border border-app-success-border bg-app-success-bg p-4 text-sm text-app-success-text">{info}</div>
       )}
 
       {section === "facturas" && (
@@ -975,21 +1174,21 @@ export default function AdminDashboard() {
           <div className="mt-5 grid gap-4 sm:grid-cols-4">
             <div className="rounded-xl border border-app-border bg-app-elevated p-4">
               <div className="text-xs text-app-muted">Total recaudado</div>
-              <div className="mt-1 text-xl font-semibold text-white">
+              <div className="mt-1 text-xl font-semibold text-app-text">
                 ${dash?.total_recaudado_cop?.toLocaleString("es-CO") ?? "—"}
               </div>
             </div>
             <div className="rounded-xl border border-app-border bg-app-elevated p-4">
               <div className="text-xs text-app-muted">Pendientes</div>
-              <div className="mt-1 text-xl font-semibold text-white">{dash?.facturas.pendientes ?? "—"}</div>
+              <div className="mt-1 text-xl font-semibold text-app-text">{dash?.facturas.pendientes ?? "—"}</div>
             </div>
             <div className="rounded-xl border border-app-border bg-app-elevated p-4">
               <div className="text-xs text-app-muted">Vencidas</div>
-              <div className="mt-1 text-xl font-semibold text-white">{dash?.facturas.vencidas ?? "—"}</div>
+              <div className="mt-1 text-xl font-semibold text-app-text">{dash?.facturas.vencidas ?? "—"}</div>
             </div>
             <div className="rounded-xl border border-app-border bg-app-elevated p-4">
               <div className="text-xs text-app-muted">Pagadas</div>
-              <div className="mt-1 text-xl font-semibold text-white">{dash?.facturas.pagadas ?? "—"}</div>
+              <div className="mt-1 text-xl font-semibold text-app-text">{dash?.facturas.pagadas ?? "—"}</div>
             </div>
           </div>
         </Card>
@@ -1020,7 +1219,7 @@ export default function AdminDashboard() {
                 setShowResidents(true);
               }}
               disabled={creating}
-              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10"
+              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
             >
               Crear / editar residentes
             </Button>
@@ -1051,7 +1250,7 @@ export default function AdminDashboard() {
             <Button
               onClick={() => setShowNewUnit((v) => !v)}
               disabled={creating}
-              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10"
+              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
             >
               Crear unidad
             </Button>
@@ -1084,7 +1283,7 @@ export default function AdminDashboard() {
                         <input
                           value={editUnitCode}
                           onChange={(e) => setEditUnitCode(e.target.value)}
-                          className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                          className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
                         />
                       ) : (
                         u.code
@@ -1095,7 +1294,7 @@ export default function AdminDashboard() {
                         <input
                           value={editUnitCoeff}
                           onChange={(e) => setEditUnitCoeff(e.target.value)}
-                          className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                          className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
                         />
                       ) : (
                         u.coefficient
@@ -1105,7 +1304,7 @@ export default function AdminDashboard() {
                       <select
                         value={u.resident_user_id ?? ""}
                         onChange={(e) => assignResident(u._id, e.target.value ? e.target.value : null)}
-                        className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                        className="w-full rounded-lg border border-app-border bg-app-surface px-2 py-1.5 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
                         disabled={creating}
                       >
                         <option value="">— Sin asignar —</option>
@@ -1126,7 +1325,7 @@ export default function AdminDashboard() {
                             <Button
                               onClick={() => setEditingUnitId(null)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
                             >
                               Cancelar
                             </Button>
@@ -1136,14 +1335,14 @@ export default function AdminDashboard() {
                             <Button
                               onClick={() => startEditUnit(u)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
                             >
                               Editar
                             </Button>
                             <Button
                               onClick={() => deleteUnit(u._id)}
                               disabled={creating}
-                              className="!bg-rose-700 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-600"
+                              className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
                             >
                               Eliminar
                             </Button>
@@ -1200,7 +1399,7 @@ export default function AdminDashboard() {
             }}
           >
             <div>
-              <label className="block text-xs text-white/85" htmlFor="invoice-filter-status">
+              <label className="block text-xs text-app-text" htmlFor="invoice-filter-status">
                 Estado
               </label>
               <select
@@ -1211,7 +1410,7 @@ export default function AdminDashboard() {
                   setInvoiceStatus(v);
                   commitInvoiceFilters({ status: v, period: invoicePeriod });
                 }}
-                className="mt-1 rounded-xl border border-app-border bg-app-surface px-2 py-2 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                className="mt-1 rounded-xl border border-app-border bg-app-surface px-2 py-2 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
               >
                 <option value="">(Todos)</option>
                 <option value="Pendiente">Pendiente</option>
@@ -1220,7 +1419,7 @@ export default function AdminDashboard() {
               </select>
             </div>
             <div>
-              <label className="block text-xs text-white/85" htmlFor="invoice-filter-period">
+              <label className="block text-xs text-app-text" htmlFor="invoice-filter-period">
                 Periodo (YYYY-MM)
               </label>
               <input
@@ -1228,7 +1427,7 @@ export default function AdminDashboard() {
                 value={invoicePeriod}
                 onChange={(e) => setInvoicePeriod(e.target.value)}
                 placeholder="2026-04"
-                className="mt-1 w-28 rounded-xl border border-app-border bg-app-surface px-2 py-2 text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+                className="mt-1 w-28 rounded-xl border border-app-border bg-app-surface px-2 py-2 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
               />
             </div>
             <Button type="submit" className="px-3 py-1 text-xs">
@@ -1244,14 +1443,14 @@ export default function AdminDashboard() {
                   setAppliedInvoicePeriod("");
                   setInvoiceFilterError(null);
                 }}
-                className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
               >
                 Limpiar
               </Button>
             )}
           </form>
           {invoiceFilterError && (
-            <div className="mt-3 rounded-2xl border border-rose-800/60 bg-rose-950/30 p-3 text-sm text-rose-100">
+            <div className="mt-3 rounded-2xl border border-app-danger-border bg-app-danger-bg p-3 text-sm text-app-danger-text">
               {invoiceFilterError}
             </div>
           )}
@@ -1288,7 +1487,7 @@ export default function AdminDashboard() {
                         <Button
                           onClick={() => setSelectedInvoice(i)}
                           disabled={creating}
-                          className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+                          className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
                         >
                           Ver
                         </Button>
@@ -1300,7 +1499,7 @@ export default function AdminDashboard() {
                         <Button
                           onClick={() => deleteInvoice(i._id)}
                           disabled={creating}
-                          className="!bg-rose-700 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-600"
+                          className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
                         >
                           Eliminar
                         </Button>
@@ -1324,11 +1523,283 @@ export default function AdminDashboard() {
         )}
       </div>
 
+      {section === "amenidades" && (
+        <Card>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Amenidades</h3>
+            <span className="text-xs text-app-muted">{amenities.length}</span>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-4">
+            <div className="md:col-span-1">
+              <label className="text-xs text-app-text">Tipo</label>
+              <select
+                value={newAmenityType}
+                onChange={(e) => setNewAmenityType(e.target.value as any)}
+                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+              >
+                <option value="visitor_parking">Parqueadero visitantes</option>
+                <option value="social_hall">Salón comunal</option>
+              </select>
+            </div>
+            <div className="md:col-span-2">
+              <label className="text-xs text-app-text">Código</label>
+              <input
+                value={newAmenityCode}
+                onChange={(e) => setNewAmenityCode(e.target.value)}
+                placeholder={newAmenityType === "visitor_parking" ? "VIS-01" : "SALON-A"}
+                className="mt-1 w-full rounded-xl border border-app-border bg-app-surface px-3 py-2.5 text-sm text-app-text outline-none placeholder:text-app-muted/60 focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+              />
+            </div>
+            <div className="md:col-span-1 flex items-end">
+              <Button data-testid="admin-amenity-create" onClick={createAmenity} disabled={creating}>
+                Crear amenidad
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-5 max-h-[min(60vh,28rem)] overflow-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="text-app-muted">
+                <tr>
+                  <th className="py-3">Tipo</th>
+                  <th className="py-3">Código</th>
+                  <th className="py-3">Activa</th>
+                  <th className="py-3 text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {amenities.map((a) => (
+                  <tr key={a._id} className="border-t border-app-border">
+                    <td className="py-3">
+                      {a.type === "visitor_parking" ? "Parqueadero" : "Salón"}
+                    </td>
+                    <td className="py-3">{a.code}</td>
+                    <td className="py-3">
+                      {a.active ? (
+                        <span className="text-emerald-300">Sí</span>
+                      ) : (
+                        <span className="text-amber-300">No</span>
+                      )}
+                    </td>
+                    <td className="py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          onClick={() => toggleAmenity(a)}
+                          disabled={busyId === a._id}
+                          className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                        >
+                          {busyId === a._id ? "…" : a.active ? "Desactivar" : "Activar"}
+                        </Button>
+                        <Button
+                          onClick={() => deleteAmenity(a._id)}
+                          disabled={busyId === a._id}
+                          className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
+                        >
+                          Eliminar
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {amenities.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="py-3 text-app-muted">
+                      Sin amenidades. Crea una arriba o usa “Crear demo”.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {section === "reservas" && (
+        <Card>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Reservas</h3>
+            <span className="text-xs text-app-muted">
+              {resStatusFilter || resTypeFilter
+                ? `${visibleReservations.length} / ${reservations.length}`
+                : reservations.length}
+            </span>
+          </div>
+          <div className="mt-3 flex flex-wrap items-end gap-2">
+            <div>
+              <label className="block text-xs text-app-text">Tipo</label>
+              <select
+                value={resTypeFilter}
+                onChange={(e) => setResTypeFilter(e.target.value)}
+                className="mt-1 rounded-xl border border-app-border bg-app-surface px-2 py-2 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+              >
+                <option value="">(Todos)</option>
+                <option value="visitor_parking">Parqueadero</option>
+                <option value="social_hall">Salón</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-app-text">Estado</label>
+              <select
+                value={resStatusFilter}
+                onChange={(e) => setResStatusFilter(e.target.value)}
+                className="mt-1 rounded-xl border border-app-border bg-app-surface px-2 py-2 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+              >
+                <option value="">(Todos)</option>
+                <option value="Pendiente">Pendiente</option>
+                <option value="Pagada">Pagada</option>
+                <option value="Cancelada">Cancelada</option>
+              </select>
+            </div>
+            {(resStatusFilter || resTypeFilter) && (
+              <Button
+                type="button"
+                onClick={() => {
+                  setResStatusFilter("");
+                  setResTypeFilter("");
+                }}
+                className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+              >
+                Limpiar
+              </Button>
+            )}
+          </div>
+          <div className="mt-3 max-h-[min(60vh,28rem)] overflow-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 z-[1] bg-app-elevated/95 text-app-muted backdrop-blur-sm">
+                <tr>
+                  <th className="py-3">Recurso</th>
+                  <th className="py-3">Residente</th>
+                  <th className="py-3">Inicio</th>
+                  <th className="py-3">Fin</th>
+                  <th className="py-3">Valor</th>
+                  <th className="py-3">Estado</th>
+                  <th className="py-3 text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleReservations.map((r) => (
+                  <tr key={r._id} className="border-t border-app-border">
+                    <td className="py-3">
+                      {r.amenity_code}
+                      <div className="text-[10px] text-app-muted">
+                        {r.amenity_type === "visitor_parking" ? "Parqueadero" : "Salón"}
+                      </div>
+                    </td>
+                    <td className="py-3 text-app-text">{residentLabel(r.user_id)}</td>
+                    <td className="py-3">{new Date(r.start_at).toLocaleString("es-CO")}</td>
+                    <td className="py-3">{new Date(r.end_at).toLocaleString("es-CO")}</td>
+                    <td className="py-3">${r.amount_cop.toLocaleString("es-CO")}</td>
+                    <td className="py-3">{r.status}</td>
+                    <td className="py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        {r.status !== "Cancelada" && (
+                          <Button
+                            onClick={() => cancelReservation(r._id)}
+                            disabled={busyId === r._id}
+                            className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                          >
+                            {busyId === r._id ? "…" : "Cancelar"}
+                          </Button>
+                        )}
+                        <Button
+                          onClick={() => deleteReservation(r._id)}
+                          disabled={busyId === r._id}
+                          className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
+                        >
+                          Eliminar
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {visibleReservations.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="py-3 text-app-muted">
+                      {reservations.length === 0 ? "No hay reservas aún." : "Ninguna coincide con los filtros."}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {section === "gimnasio" && (
+        <Card>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Suscripciones gimnasio</h3>
+            <span className="text-xs text-app-muted">
+              {gymPeriodFilter ? `${visibleGymSubs.length} / ${gymSubs.length}` : gymSubs.length}
+            </span>
+          </div>
+          <div className="mt-3 flex flex-wrap items-end gap-2">
+            <div>
+              <label className="block text-xs text-app-text">Periodo (YYYY-MM)</label>
+              <input
+                value={gymPeriodFilter}
+                onChange={(e) => setGymPeriodFilter(e.target.value)}
+                placeholder="2026-04"
+                className="mt-1 w-28 rounded-xl border border-app-border bg-app-surface px-2 py-2 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+              />
+            </div>
+            {gymPeriodFilter && (
+              <Button
+                type="button"
+                onClick={() => setGymPeriodFilter("")}
+                className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+              >
+                Limpiar
+              </Button>
+            )}
+          </div>
+          <div className="mt-3 max-h-[min(60vh,28rem)] overflow-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 z-[1] bg-app-elevated/95 text-app-muted backdrop-blur-sm">
+                <tr>
+                  <th className="py-3">Periodo</th>
+                  <th className="py-3">Residente</th>
+                  <th className="py-3">Valor</th>
+                  <th className="py-3">Estado</th>
+                  <th className="py-3 text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleGymSubs.map((s) => (
+                  <tr key={s._id} className="border-t border-app-border">
+                    <td className="py-3">{s.period}</td>
+                    <td className="py-3 text-app-text">{residentLabel(s.user_id)}</td>
+                    <td className="py-3">${s.amount_cop.toLocaleString("es-CO")}</td>
+                    <td className="py-3">{s.status}</td>
+                    <td className="py-3 text-right">
+                      <Button
+                        onClick={() => deleteGymSub(s._id)}
+                        disabled={busyId === s._id}
+                        className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
+                      >
+                        {busyId === s._id ? "…" : "Eliminar"}
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+                {visibleGymSubs.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-3 text-app-muted">
+                      {gymSubs.length === 0 ? "Sin suscripciones aún." : "Ninguna coincide con el filtro."}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
       {selectedInvoice && (
         <Card>
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">Detalle de factura</h3>
-            <button className="text-xs text-white/85 hover:text-app-cyan" onClick={() => setSelectedInvoice(null)}>
+            <button className="text-xs text-app-text hover:text-app-cyan" onClick={() => setSelectedInvoice(null)}>
               Cerrar
             </button>
           </div>
@@ -1342,17 +1813,17 @@ export default function AdminDashboard() {
             <Button
               onClick={() => retryFactus(selectedInvoice._id)}
               disabled={creating}
-              className="border border-app-border !bg-app-elevated text-white hover:!bg-white/10 px-3 py-1 text-xs"
+              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
             >
               Reintentar Factus
             </Button>
           </div>
           {selectedInvoice.factus_error && (
-            <div className="mt-3 rounded-2xl border border-amber-800/60 bg-amber-950/25 p-3 text-sm text-amber-100">
+            <div className="mt-3 rounded-2xl border border-app-warning-border bg-app-warning-bg p-3 text-sm text-app-warning-text">
               Factus error: {selectedInvoice.factus_error}
             </div>
           )}
-          <pre className="mt-4 max-h-80 overflow-auto rounded-xl border border-app-border bg-app-surface p-4 text-xs leading-relaxed text-white/95">
+          <pre className="mt-4 max-h-80 overflow-auto rounded-xl border border-app-border bg-app-elevated p-4 text-xs leading-relaxed text-app-text">
             {JSON.stringify(selectedInvoice, null, 2)}
           </pre>
         </Card>

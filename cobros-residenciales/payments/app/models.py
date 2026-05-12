@@ -1,17 +1,42 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+TargetKind = Literal["invoice", "reservation", "gym_subscription"]
 
 
 class PaymentCreate(BaseModel):
-    invoice_id: str
+    """
+    Payload genérico para iniciar un pago.
+    Acepta dos formas:
+      - { invoice_id, provider } (compatibilidad con clientes antiguos)
+      - { target_kind, target_id, provider }
+    """
+
+    invoice_id: str | None = None
+    target_kind: TargetKind | None = None
+    target_id: str | None = None
     provider: str = Field(default="mock", description="mock|wompi|epayco")
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "PaymentCreate":
+        if self.target_kind is None and self.invoice_id:
+            self.target_kind = "invoice"
+            self.target_id = self.invoice_id
+        if self.target_kind == "invoice" and not self.target_id and self.invoice_id:
+            self.target_id = self.invoice_id
+        if not self.target_kind or not self.target_id:
+            raise ValueError("Provide either invoice_id or (target_kind + target_id)")
+        return self
 
 
 class PaymentCreated(BaseModel):
     payment_id: str
-    invoice_id: str
+    invoice_id: str | None = None
+    target_kind: TargetKind
+    target_id: str
     provider: str
     amount_cop: int
     currency: str = "COP"
@@ -20,7 +45,9 @@ class PaymentCreated(BaseModel):
 
 class PaymentPublic(BaseModel):
     payment_id: str = Field(alias="_id")
-    invoice_id: str
+    invoice_id: str | None = None
+    target_kind: TargetKind | None = None
+    target_id: str | None = None
     provider: str
     provider_ref: str | None = None
     status: str
