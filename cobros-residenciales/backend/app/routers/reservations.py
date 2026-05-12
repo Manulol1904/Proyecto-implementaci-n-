@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -36,6 +37,11 @@ def _compute_amount(amenity_type: str, start_at: datetime, end_at: datetime) -> 
         days = max(1, math.ceil(seconds / 86400))
         return int(days * settings.social_hall_daily_cop)
     raise bad_request(f"Unsupported amenity type: {amenity_type}")
+
+
+def _visitor_pin() -> str:
+    """PIN corto para portería. Se genera solo en parqueadero de visitantes."""
+    return f"{secrets.randbelow(900000) + 100000:06d}"
 
 
 async def _has_overlap(amenity_id: str, start_at: datetime, end_at: datetime) -> bool:
@@ -77,6 +83,7 @@ async def create_reservation(payload: ReservationCreate, user: dict = Depends(ge
         "amenity_type": amenity["type"],
         "amenity_code": amenity["code"],
         "user_id": user["_id"],
+        "access_pin": _visitor_pin() if amenity["type"] == AmenityType.visitor_parking.value else None,
         "start_at": start_at,
         "end_at": end_at,
         "amount_cop": int(amount),

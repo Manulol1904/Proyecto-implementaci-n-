@@ -151,6 +151,7 @@ class ReservationPublic(MongoModel):
     amenity_type: AmenityType
     amenity_code: str
     user_id: str
+    access_pin: str | None = None
     start_at: datetime
     end_at: datetime
     amount_cop: int

@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
+import ConsumptionBars, {
+  IconBarCar,
+  IconBarGym,
+  IconBarHall,
+  IconBarInvoice,
+  type ConsumptionItem,
+} from "../../components/ConsumptionBars";
 import { backend } from "../../lib/api";
 import { useSection, type AdminSection } from "../../lib/section";
 
@@ -47,6 +54,7 @@ type Reservation = {
   amenity_type: "visitor_parking" | "social_hall";
   amenity_code: string;
   user_id: string;
+  access_pin?: string | null;
   start_at: string;
   end_at: string;
   amount_cop: number;
@@ -437,6 +445,106 @@ export default function AdminDashboard() {
   const visibleGymSubs = useMemo(() => {
     return gymSubs.filter((s) => (gymPeriodFilter ? s.period === gymPeriodFilter : true));
   }, [gymSubs, gymPeriodFilter]);
+
+  /**
+   * Recaudo agregado por categoría (suma de los pagados). Sirve para las barras
+   * interactivas que el admin ve en su panel.
+   */
+  const adminConsumption: ConsumptionItem[] = useMemo(() => {
+    const paidInvoices = invoices.filter((i) => String(i.status ?? "").toLowerCase() === "pagada");
+    const paidParking = reservations.filter(
+      (r) => r.amenity_type === "visitor_parking" && r.status === "Pagada",
+    );
+    const paidHall = reservations.filter(
+      (r) => r.amenity_type === "social_hall" && r.status === "Pagada",
+    );
+    const paidGym = gymSubs.filter((s) => s.status === "Pagada");
+    const sum = <T extends { amount_cop: number }>(arr: T[]) =>
+      arr.reduce((acc, x) => acc + (Number(x.amount_cop) || 0), 0);
+    return [
+      {
+        key: "facturas",
+        label: "Administración",
+        amount: sum(paidInvoices),
+        count: paidInvoices.length,
+        color: "bg-gradient-to-r from-violet-500 to-indigo-500",
+        icon: <IconBarInvoice />,
+      },
+      {
+        key: "reservas-parking",
+        label: "Parqueadero",
+        amount: sum(paidParking),
+        count: paidParking.length,
+        color: "bg-gradient-to-r from-sky-500 to-cyan-400",
+        icon: <IconBarCar />,
+      },
+      {
+        key: "reservas-salon",
+        label: "Salón comunal",
+        amount: sum(paidHall),
+        count: paidHall.length,
+        color: "bg-gradient-to-r from-amber-500 to-orange-400",
+        icon: <IconBarHall />,
+      },
+      {
+        key: "gimnasio",
+        label: "Gimnasio",
+        amount: sum(paidGym),
+        count: paidGym.length,
+        color: "bg-gradient-to-r from-emerald-500 to-teal-400",
+        icon: <IconBarGym />,
+      },
+    ];
+  }, [invoices, reservations, gymSubs]);
+
+  /** Cartera vencida/pendiente del conjunto, por concepto. */
+  const adminPending: ConsumptionItem[] = useMemo(() => {
+    const isPaid = (s: unknown) => String(s ?? "").toLowerCase() === "pagada";
+    const pendingInvoices = invoices.filter((i) => !isPaid(i.status));
+    const pendingParking = reservations.filter(
+      (r) => r.amenity_type === "visitor_parking" && r.status === "Pendiente",
+    );
+    const pendingHall = reservations.filter(
+      (r) => r.amenity_type === "social_hall" && r.status === "Pendiente",
+    );
+    const pendingGym = gymSubs.filter((s) => s.status === "Pendiente");
+    const sum = <T extends { amount_cop: number }>(arr: T[]) =>
+      arr.reduce((acc, x) => acc + (Number(x.amount_cop) || 0), 0);
+    return [
+      {
+        key: "pending-facturas",
+        label: "Administración",
+        amount: sum(pendingInvoices),
+        count: pendingInvoices.length,
+        color: "bg-gradient-to-r from-rose-500 to-pink-500",
+        icon: <IconBarInvoice />,
+      },
+      {
+        key: "pending-parking",
+        label: "Parqueadero",
+        amount: sum(pendingParking),
+        count: pendingParking.length,
+        color: "bg-gradient-to-r from-rose-500 to-pink-500",
+        icon: <IconBarCar />,
+      },
+      {
+        key: "pending-hall",
+        label: "Salón comunal",
+        amount: sum(pendingHall),
+        count: pendingHall.length,
+        color: "bg-gradient-to-r from-rose-500 to-pink-500",
+        icon: <IconBarHall />,
+      },
+      {
+        key: "pending-gym",
+        label: "Gimnasio",
+        amount: sum(pendingGym),
+        count: pendingGym.length,
+        color: "bg-gradient-to-r from-rose-500 to-pink-500",
+        icon: <IconBarGym />,
+      },
+    ];
+  }, [invoices, reservations, gymSubs]);
 
   function residentLabel(userId: string): string {
     const u = residents.find((x) => x._id === userId);
@@ -839,6 +947,33 @@ export default function AdminDashboard() {
             Crear demo
           </Button>
         </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ConsumptionBars
+          title="Recaudo del conjunto"
+          subtitle="Suma de facturas, reservas y gimnasio efectivamente pagados."
+          items={adminConsumption}
+          totalLabel="Total recaudado"
+          emptyLabel="Aún no hay pagos confirmados."
+          onSelect={(key) => {
+            if (key === "facturas") setSection("facturas");
+            else if (key === "reservas-parking" || key === "reservas-salon") setSection("reservas");
+            else if (key === "gimnasio") setSection("gimnasio");
+          }}
+        />
+        <ConsumptionBars
+          title="Cartera abierta"
+          subtitle="Saldos por cobrar por concepto."
+          items={adminPending}
+          totalLabel="Total por cobrar"
+          emptyLabel="No hay cartera abierta. ¡Vamos al día!"
+          onSelect={(key) => {
+            if (key === "pending-facturas") setSection("facturas");
+            else if (key === "pending-parking" || key === "pending-hall") setSection("reservas");
+            else if (key === "pending-gym") setSection("gimnasio");
+          }}
+        />
       </div>
 
       {showResidents && (
@@ -1672,6 +1807,7 @@ export default function AdminDashboard() {
                   <th className="py-3">Inicio</th>
                   <th className="py-3">Fin</th>
                   <th className="py-3">Valor</th>
+                  <th className="py-3">PIN</th>
                   <th className="py-3">Estado</th>
                   <th className="py-3 text-right">Acciones</th>
                 </tr>
@@ -1689,6 +1825,13 @@ export default function AdminDashboard() {
                     <td className="py-3">{new Date(r.start_at).toLocaleString("es-CO")}</td>
                     <td className="py-3">{new Date(r.end_at).toLocaleString("es-CO")}</td>
                     <td className="py-3">${r.amount_cop.toLocaleString("es-CO")}</td>
+                    <td className="py-3">
+                      {r.amenity_type === "visitor_parking" && r.access_pin ? (
+                        <span className="font-mono text-xs text-app-text">{r.access_pin}</span>
+                      ) : (
+                        <span className="text-xs text-app-muted">—</span>
+                      )}
+                    </td>
                     <td className="py-3">{r.status}</td>
                     <td className="py-3 text-right">
                       <div className="flex justify-end gap-2">
@@ -1714,7 +1857,7 @@ export default function AdminDashboard() {
                 ))}
                 {visibleReservations.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-3 text-app-muted">
+                    <td colSpan={8} className="py-3 text-app-muted">
                       {reservations.length === 0 ? "No hay reservas aún." : "Ninguna coincide con los filtros."}
                     </td>
                   </tr>

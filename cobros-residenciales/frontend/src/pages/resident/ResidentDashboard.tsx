@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import Button from "../../components/Button";
 import Card from "../../components/Card";
+import ConsumptionBars, {
+  IconBarCar,
+  IconBarGym,
+  IconBarHall,
+  IconBarInvoice,
+  type ConsumptionItem,
+} from "../../components/ConsumptionBars";
 import { backend, payments } from "../../lib/api";
 import { useSection, type ResidentSection } from "../../lib/section";
 
@@ -28,6 +35,7 @@ type Reservation = {
   amenity_type: "visitor_parking" | "social_hall";
   amenity_code: string;
   user_id: string;
+  access_pin?: string | null;
   start_at: string;
   end_at: string;
   amount_cop: number;
@@ -57,6 +65,33 @@ function currentPeriod(): string {
 function formatLocalDateTime(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatLocalDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Hora actual redondeada hacia arriba al próximo cuarto de hora. */
+function nextQuarter(): Date {
+  const d = new Date();
+  d.setSeconds(0, 0);
+  const mins = d.getMinutes();
+  const add = mins === 0 ? 0 : 15 - (mins % 15);
+  d.setMinutes(mins + add);
+  return d;
+}
+
+function addHours(d: Date, hours: number): Date {
+  const copy = new Date(d);
+  copy.setHours(copy.getHours() + hours);
+  return copy;
+}
+
+function addDays(d: Date, days: number): Date {
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + days);
+  return copy;
 }
 
 export default function ResidentDashboard() {
@@ -119,6 +154,151 @@ export default function ResidentDashboard() {
 
   const period = currentPeriod();
   const gymCurrent = useMemo(() => gymSubs.find((s) => s.period === period) ?? null, [gymSubs, period]);
+
+  // Tarifas (deben coincidir con backend/app/core/config.py)
+  const PARKING_HOURLY_COP = 2000;
+  const HALL_DAILY_COP = 80000;
+
+  /** Estimación local del costo de parqueadero (horas redondeadas hacia arriba). */
+  const parkingEstimate = useMemo(() => {
+    if (!parkingStart || !parkingEnd) return null;
+    const s = new Date(parkingStart).getTime();
+    const e = new Date(parkingEnd).getTime();
+    if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return null;
+    const hours = Math.max(1, Math.ceil((e - s) / 3_600_000));
+    return { hours, amount: hours * PARKING_HOURLY_COP };
+  }, [parkingStart, parkingEnd]);
+
+  /** Estimación local del costo del salón comunal (1 día). */
+  const hallEstimate = useMemo(() => {
+    if (!hallDate) return null;
+    return { days: 1, amount: HALL_DAILY_COP };
+  }, [hallDate]);
+
+  /**
+   * Consumo agregado del residente (lo que YA pagó), separado por categoría.
+   * Sirve para alimentar las barras interactivas del header.
+   */
+  const consumption: ConsumptionItem[] = useMemo(() => {
+    const paidInvoices = invoices.filter((i) => i.status === "Pagada");
+    const paidParking = reservations.filter(
+      (r) => r.amenity_type === "visitor_parking" && r.status === "Pagada",
+    );
+    const paidHall = reservations.filter(
+      (r) => r.amenity_type === "social_hall" && r.status === "Pagada",
+    );
+    const paidGym = gymSubs.filter((s) => s.status === "Pagada");
+    const sum = <T extends { amount_cop: number }>(arr: T[]) =>
+      arr.reduce((acc, x) => acc + (Number(x.amount_cop) || 0), 0);
+    return [
+      {
+        key: "facturas",
+        label: "Administración",
+        amount: sum(paidInvoices),
+        count: paidInvoices.length,
+        color: "bg-gradient-to-r from-violet-500 to-indigo-500",
+        icon: <IconBarInvoice />,
+      },
+      {
+        key: "parqueadero",
+        label: "Parqueadero",
+        amount: sum(paidParking),
+        count: paidParking.length,
+        color: "bg-gradient-to-r from-sky-500 to-cyan-400",
+        icon: <IconBarCar />,
+      },
+      {
+        key: "salon",
+        label: "Salón comunal",
+        amount: sum(paidHall),
+        count: paidHall.length,
+        color: "bg-gradient-to-r from-amber-500 to-orange-400",
+        icon: <IconBarHall />,
+      },
+      {
+        key: "gimnasio",
+        label: "Gimnasio",
+        amount: sum(paidGym),
+        count: paidGym.length,
+        color: "bg-gradient-to-r from-emerald-500 to-teal-400",
+        icon: <IconBarGym />,
+      },
+    ];
+  }, [invoices, reservations, gymSubs]);
+
+  /**
+   * Pendientes por pagar del residente: sirve como segunda visualización
+   * para que la persona vea cuánto le falta y por qué concepto.
+   */
+  const pending: ConsumptionItem[] = useMemo(() => {
+    const pendingInvoices = invoices.filter((i) => i.status !== "Pagada");
+    const pendingParking = reservations.filter(
+      (r) => r.amenity_type === "visitor_parking" && r.status === "Pendiente",
+    );
+    const pendingHall = reservations.filter(
+      (r) => r.amenity_type === "social_hall" && r.status === "Pendiente",
+    );
+    const pendingGym = gymSubs.filter((s) => s.status === "Pendiente");
+    const sum = <T extends { amount_cop: number }>(arr: T[]) =>
+      arr.reduce((acc, x) => acc + (Number(x.amount_cop) || 0), 0);
+    return [
+      {
+        key: "facturas",
+        label: "Administración",
+        amount: sum(pendingInvoices),
+        count: pendingInvoices.length,
+        color: "bg-gradient-to-r from-rose-500 to-pink-500",
+        icon: <IconBarInvoice />,
+      },
+      {
+        key: "parqueadero",
+        label: "Parqueadero",
+        amount: sum(pendingParking),
+        count: pendingParking.length,
+        color: "bg-gradient-to-r from-rose-500 to-pink-500",
+        icon: <IconBarCar />,
+      },
+      {
+        key: "salon",
+        label: "Salón comunal",
+        amount: sum(pendingHall),
+        count: pendingHall.length,
+        color: "bg-gradient-to-r from-rose-500 to-pink-500",
+        icon: <IconBarHall />,
+      },
+      {
+        key: "gimnasio",
+        label: "Gimnasio",
+        amount: sum(pendingGym),
+        count: pendingGym.length,
+        color: "bg-gradient-to-r from-rose-500 to-pink-500",
+        icon: <IconBarGym />,
+      },
+    ];
+  }, [invoices, reservations, gymSubs]);
+
+  // Pre-llenar (una sola vez) los formularios al entrar a su tab,
+  // para evitar que parezcan "rotos" por estar vacíos.
+  const [parkingPrefilled, setParkingPrefilled] = useState(false);
+  const [hallPrefilled, setHallPrefilled] = useState(false);
+
+  useEffect(() => {
+    if (tab !== "parqueadero" || parkingPrefilled) return;
+    if (parkings.length === 0) return;
+    setParkingAmenityId((cur) => cur || parkings[0]._id);
+    const start = nextQuarter();
+    setParkingStart((cur) => cur || formatLocalDateTime(start));
+    setParkingEnd((cur) => cur || formatLocalDateTime(addHours(start, 2)));
+    setParkingPrefilled(true);
+  }, [tab, parkings, parkingPrefilled]);
+
+  useEffect(() => {
+    if (tab !== "salon" || hallPrefilled) return;
+    if (halls.length === 0) return;
+    setHallAmenityId((cur) => cur || halls[0]._id);
+    setHallDate((cur) => cur || formatLocalDate(addDays(new Date(), 1)));
+    setHallPrefilled(true);
+  }, [tab, halls, hallPrefilled]);
 
   async function pay(targetKind: TargetKind, targetId: string) {
     setLoading(true);
@@ -237,16 +417,30 @@ export default function ResidentDashboard() {
   }
 
   async function reserveParking() {
-    if (!parkingAmenityId || !parkingStart || !parkingEnd) {
-      setError("Selecciona parqueadero, hora de inicio y de fin.");
+    if (!parkingAmenityId) {
+      setError("Selecciona un parqueadero disponible.");
+      return;
+    }
+    if (!parkingStart || !parkingEnd) {
+      setError("Selecciona la hora de inicio y de fin.");
+      return;
+    }
+    const startDate = new Date(parkingStart);
+    const endDate = new Date(parkingEnd);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      setError("Las fechas seleccionadas no son válidas.");
+      return;
+    }
+    if (endDate <= startDate) {
+      setError("La hora de fin debe ser posterior a la hora de inicio.");
       return;
     }
     setLoading(true);
     setError(null);
     setInfo(null);
     try {
-      const startISO = new Date(parkingStart).toISOString();
-      const endISO = new Date(parkingEnd).toISOString();
+      const startISO = startDate.toISOString();
+      const endISO = endDate.toISOString();
       logStep("POST reservations (parqueadero)", JSON.stringify({ amenity_id: parkingAmenityId, start_at: startISO, end_at: endISO }));
       const r = await backend.post("/reservations", {
         amenity_id: parkingAmenityId,
@@ -267,8 +461,12 @@ export default function ResidentDashboard() {
   }
 
   async function reserveHall() {
-    if (!hallAmenityId || !hallDate) {
-      setError("Selecciona salón y fecha.");
+    if (!hallAmenityId) {
+      setError("Selecciona un salón comunal.");
+      return;
+    }
+    if (!hallDate) {
+      setError("Selecciona la fecha del evento.");
       return;
     }
     setLoading(true);
@@ -372,6 +570,25 @@ export default function ResidentDashboard() {
           Pago pendiente de confirmación. Estamos actualizando automáticamente…
         </div>
       )}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ConsumptionBars
+          title="Mi consumo pagado"
+          subtitle="Clic en una barra para abrir esa sección."
+          items={consumption}
+          totalLabel="Total pagado"
+          emptyLabel="Aún no has pagado servicios. Cuando lo hagas, verás el desglose aquí."
+          onSelect={(key) => setTab(key as Tab)}
+        />
+        <ConsumptionBars
+          title="Pendiente por pagar"
+          subtitle="Saldos abiertos por concepto."
+          items={pending}
+          totalLabel="Total pendiente"
+          emptyLabel="¡Estás al día! No tienes saldos pendientes."
+          onSelect={(key) => setTab(key as Tab)}
+        />
+      </div>
 
       {import.meta.env.DEV && (
         <Card>
@@ -497,9 +714,23 @@ export default function ResidentDashboard() {
                   className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-sm text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
                 />
               </div>
-              <div>
-                <Button data-testid="parking-reserve" disabled={loading} onClick={reserveParking}>
-                  Reservar y pagar
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-app-muted">
+                  {parkingEstimate ? (
+                    <>
+                      Estimado: <span className="font-semibold text-app-text">${parkingEstimate.amount.toLocaleString("es-CO")}</span>{" "}
+                      ({parkingEstimate.hours} h × ${PARKING_HOURLY_COP.toLocaleString("es-CO")})
+                    </>
+                  ) : (
+                    "Selecciona inicio y fin para ver el valor."
+                  )}
+                </div>
+                <Button
+                  data-testid="parking-reserve"
+                  disabled={loading || !parkingAmenityId || !parkingStart || !parkingEnd}
+                  onClick={reserveParking}
+                >
+                  {loading ? "Procesando…" : "Reservar y pagar"}
                 </Button>
               </div>
             </div>
@@ -515,6 +746,7 @@ export default function ResidentDashboard() {
                     <th className="py-3">Inicio</th>
                     <th className="py-3">Fin</th>
                     <th className="py-3">Valor</th>
+                    <th className="py-3">PIN</th>
                     <th className="py-3">Estado</th>
                     <th className="py-3 text-right">Acciones</th>
                   </tr>
@@ -528,6 +760,15 @@ export default function ResidentDashboard() {
                         <td className="py-3">{new Date(r.start_at).toLocaleString("es-CO")}</td>
                         <td className="py-3">{new Date(r.end_at).toLocaleString("es-CO")}</td>
                         <td className="py-3">${r.amount_cop.toLocaleString("es-CO")}</td>
+                        <td className="py-3">
+                          {r.status === "Pagada" && r.access_pin ? (
+                            <span className="rounded-lg border border-app-border bg-app-elevated px-2 py-1 font-mono text-xs text-app-text">
+                              {r.access_pin}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-app-muted">Al pagar</span>
+                          )}
+                        </td>
                         <td className="py-3">{r.status}</td>
                         <td className="py-3 text-right">
                           <div className="flex flex-wrap justify-end gap-2">
@@ -551,7 +792,7 @@ export default function ResidentDashboard() {
                     ))}
                   {reservations.filter((r) => r.amenity_type === "visitor_parking").length === 0 && (
                     <tr>
-                      <td className="py-4 text-app-muted" colSpan={6}>
+                      <td className="py-4 text-app-muted" colSpan={7}>
                         Sin reservas aún.
                       </td>
                     </tr>
@@ -590,12 +831,27 @@ export default function ResidentDashboard() {
                   type="date"
                   value={hallDate}
                   onChange={(e) => setHallDate(e.target.value)}
+                  min={formatLocalDate(new Date())}
                   className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-sm text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
                 />
               </div>
-              <div>
-                <Button data-testid="hall-reserve" disabled={loading} onClick={reserveHall}>
-                  Reservar y pagar
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-app-muted">
+                  {hallEstimate ? (
+                    <>
+                      Estimado: <span className="font-semibold text-app-text">${hallEstimate.amount.toLocaleString("es-CO")}</span>{" "}
+                      (1 día)
+                    </>
+                  ) : (
+                    "Selecciona la fecha para ver el valor."
+                  )}
+                </div>
+                <Button
+                  data-testid="hall-reserve"
+                  disabled={loading || !hallAmenityId || !hallDate}
+                  onClick={reserveHall}
+                >
+                  {loading ? "Procesando…" : "Reservar y pagar"}
                 </Button>
               </div>
             </div>
@@ -676,7 +932,13 @@ export default function ResidentDashboard() {
                 disabled={loading || gymCurrent?.status === "Pagada"}
                 onClick={subscribeGymAndPay}
               >
-                {gymCurrent?.status === "Pagada" ? "Pagada" : gymCurrent ? "Pagar" : "Suscribirme y pagar"}
+                {loading
+                  ? "Procesando…"
+                  : gymCurrent?.status === "Pagada"
+                    ? "Pagada"
+                    : gymCurrent
+                      ? "Pagar"
+                      : "Suscribirme y pagar"}
               </Button>
             </div>
           </Card>

@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +15,14 @@ class Settings(BaseSettings):
 
     admin_fee_base_cop: int = 300000
     invoice_due_day: int = 10
+    gym_monthly_cop: int = 40000
+
+    reservation_pending_expire_minutes: int = 30
+    payment_reconcile_after_minutes: int = 30
+    factus_retry_limit: int = 25
+
+    backend_internal_url: str = "http://backend:8000"
+    payments_internal_url: str = "http://payments:8002"
 
     # Factus (OAuth + Bills v2)
     # Sandbox: https://api-sandbox.factus.com.co
@@ -29,6 +38,13 @@ class Settings(BaseSettings):
     factus_operation_type: str = "10"  # Estándar
     factus_document_type: str = "01"  # Factura electrónica de venta
     factus_send_email: bool = False
+
+    @field_validator("factus_numbering_range_id", mode="before")
+    @classmethod
+    def _empty_int_to_none(cls, value):
+        if value == "":
+            return None
+        return value
 
 
 settings = Settings()

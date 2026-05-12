@@ -345,9 +345,9 @@ async def wompi_webhook(request: Request):
             {"_id": payment["_id"]},
             {"$set": {"status": "failed"}},
         )
-        log.info("wompi_payment_failed", payment_id=str(payment["_id"]), invoice_id=payment["invoice_id"], status=status)
+        log.info("wompi_payment_failed", payment_id=str(payment["_id"]), target_kind=kind, target_id=tid, status=status)
     else:
-        log.info("wompi_payment_pending", payment_id=str(payment["_id"]), invoice_id=payment["invoice_id"], status=status)
+        log.info("wompi_payment_pending", payment_id=str(payment["_id"]), target_kind=kind, target_id=tid, status=status)
 
     return {"ok": True}
 
@@ -424,7 +424,7 @@ async def epayco_confirmation(request: Request):
         )
 
     if not payment:
-        log.warning("epayco_event_unmapped", x_ref_payco=x_ref_payco, invoice_id=invoice_id)
+        log.warning("epayco_event_unmapped", x_ref_payco=x_ref_payco, target_hint=target_hint)
         return {"ok": True}
 
     now = datetime.now(timezone.utc)
