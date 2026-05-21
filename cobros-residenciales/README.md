@@ -43,6 +43,11 @@ Servicios:
 ### Hot reload en desarrollo
 El servicio `frontend` monta el código fuente como bind mount (`./frontend:/app`) y usa `CHOKIDAR_USEPOLLING=true` para que el watcher funcione bien en Windows + Docker. Esto permite **Vite HMR** sin reconstruir imagen al editar `*.tsx` / `*.css`. Si tocas `tailwind.config.js`, Vite hace un reload completo (esperado).
 
+### Desplegar gratis en internet
+
+- **Más sencillo:** **[DEPLOY_FACIL.md](./DEPLOY_FACIL.md)** (Render + Atlas, o enlace temporal con tu PC).
+- **Con servidor propio:** **[DEPLOY_GRATIS.md](./DEPLOY_GRATIS.md)** (Oracle VM + Docker).
+
 ### Producción (MongoDB Atlas)
 1. Configura en `.env` tu `MONGODB_URI` de Atlas (`mongodb+srv://...`).
 2. Define URLs públicas:

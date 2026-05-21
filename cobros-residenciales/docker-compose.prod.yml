@@ -1,12 +1,15 @@
+# Producción: MongoDB en Atlas (MONGODB_URI en .env). Redis local en el servidor.
 services:
   frontend:
     build:
       context: ./frontend
-    environment:
-      - VITE_BACKEND_URL=${VITE_BACKEND_URL}
-      - VITE_PAYMENTS_URL=${VITE_PAYMENTS_URL}
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_BACKEND_URL: ${VITE_BACKEND_URL}
+        VITE_PAYMENTS_URL: ${VITE_PAYMENTS_URL}
     ports:
-      - "5173:5173"
+      - "80:80"
+    restart: unless-stopped
     depends_on:
       - backend
       - payments
@@ -15,9 +18,10 @@ services:
     build:
       context: ./backend
     env_file:
-      - ./.env
+      - .env
     ports:
       - "8000:8000"
+    restart: unless-stopped
     depends_on:
       - redis
 
@@ -25,21 +29,23 @@ services:
     build:
       context: ./worker
     env_file:
-      - ./.env
+      - .env
+    restart: unless-stopped
     depends_on:
       - redis
+      - backend
 
   payments:
     build:
       context: ./payments
     env_file:
-      - ./.env
+      - .env
     ports:
       - "8002:8002"
+    restart: unless-stopped
     depends_on:
       - redis
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    restart: unless-stopped

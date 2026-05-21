@@ -11,7 +11,13 @@ from app.core.errors import bad_request, forbidden, not_found
 from app.db.mongo import mongo
 from app.deps.auth import get_current_user
 from app.domain.enums import AmenityType, ReservationStatus, UserRole
-from app.domain.models import ReservationCreate, ReservationPublic
+from app.domain.models import (
+    CalendarAmenityItem,
+    CalendarEventItem,
+    ReservationCalendarResponse,
+    ReservationCreate,
+    ReservationPublic,
+)
 from app.utils.ids import new_id
 
 
@@ -116,6 +122,93 @@ async def list_reservations(
     async for doc in mongo.db.reservations.find(q).sort([("start_at", -1), ("created_at", -1)]):
         items.append(ReservationPublic(**doc))
     return items
+
+
+@router.get("/calendar", response_model=ReservationCalendarResponse)
+async def reservation_calendar(
+    from_: datetime = Query(..., alias="from"),
+    to: datetime = Query(...),
+    type_filter: AmenityType | None = Query(default=None, alias="type"),
+    amenity_id: str | None = Query(default=None),
+    user: dict = Depends(get_current_user),
+):
+    """
+    Ocupación por amenidad en un rango [from, to).
+    Admin: ve nombre del residente en cada evento.
+    Residente: ve «Ocupado» en reservas ajenas y su nombre en las propias.
+    """
+    if mongo.db is None:
+        raise bad_request("DB not ready")
+
+    start = _ensure_aware_utc(from_)
+    end = _ensure_aware_utc(to)
+    if end <= start:
+        raise bad_request("to must be after from")
+
+    is_admin = user.get("role") == UserRole.admin.value
+
+    amenity_q: dict = {"active": True}
+    if type_filter is not None:
+        amenity_q["type"] = type_filter.value
+    if amenity_id:
+        amenity_q["_id"] = amenity_id
+
+    amenities: list[CalendarAmenityItem] = []
+    amenity_ids: list[str] = []
+    async for a in mongo.db.amenities.find(amenity_q).sort([("type", 1), ("code", 1)]):
+        amenities.append(
+            CalendarAmenityItem(
+                _id=a["_id"],
+                type=a["type"],
+                code=a["code"],
+                active=bool(a.get("active", True)),
+            )
+        )
+        amenity_ids.append(a["_id"])
+
+    if not amenity_ids:
+        return ReservationCalendarResponse(
+            **{"from": start, "to": end, "amenities": [], "events": []},
+        )
+
+    user_names: dict[str, str] = {}
+    events: list[CalendarEventItem] = []
+    res_q = {
+        "amenity_id": {"$in": amenity_ids},
+        "status": {"$in": [ReservationStatus.pendiente.value, ReservationStatus.pagada.value]},
+        "start_at": {"$lt": end},
+        "end_at": {"$gt": start},
+    }
+    async for r in mongo.db.reservations.find(res_q).sort("start_at", 1):
+        uid = r.get("user_id", "")
+        is_mine = uid == user["_id"]
+        display_name: str | None = None
+        if is_admin or is_mine:
+            if uid and uid not in user_names:
+                u = await mongo.db.users.find_one({"_id": uid}, {"full_name": 1})
+                user_names[uid] = (u or {}).get("full_name") or uid[:8]
+            display_name = user_names.get(uid) if uid else None
+        else:
+            display_name = "Ocupado"
+
+        events.append(
+            CalendarEventItem(
+                reservation_id=r["_id"],
+                amenity_id=r["amenity_id"],
+                amenity_code=r.get("amenity_code", ""),
+                amenity_type=r["amenity_type"],
+                start_at=r["start_at"],
+                end_at=r["end_at"],
+                status=r["status"],
+                user_id=uid,
+                user_name=display_name,
+                is_mine=is_mine,
+            )
+        )
+
+    return ReservationCalendarResponse(
+        **{"from": start, "to": end, "amenities": amenities, "events": events},
+    )
 
 
 @router.get("/my", response_model=list[ReservationPublic])

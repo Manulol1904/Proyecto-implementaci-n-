@@ -12,6 +12,7 @@ import { backend } from "../../lib/api";
 import { detailFromAxiosError, downloadInvoiceBlob } from "../../lib/apiErrors";
 import { useSection, type AdminSection } from "../../lib/section";
 import ProfilePanel from "../../components/ProfilePanel";
+import ReservationCalendar from "../../components/ReservationCalendar";
 import type { Me } from "../../lib/auth";
 
 type Dashboard = {
@@ -1837,6 +1838,34 @@ export default function AdminDashboard({
       )}
 
       {section === "reservas" && (
+        <div className="space-y-6">
+        <Card>
+          <div className="mb-4 flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-xs text-app-muted">Calendario</label>
+              <select
+                value={resTypeFilter === "social_hall" ? "social_hall" : "visitor_parking"}
+                onChange={(e) =>
+                  setResTypeFilter(e.target.value === "social_hall" ? "social_hall" : "visitor_parking")
+                }
+                className="mt-1 rounded-xl border border-app-border bg-app-surface px-3 py-2 text-sm text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
+              >
+                <option value="visitor_parking">Parqueaderos visitantes</option>
+                <option value="social_hall">Salón comunal</option>
+              </select>
+            </div>
+          </div>
+          <ReservationCalendar
+            amenityType={resTypeFilter === "social_hall" ? "social_hall" : "visitor_parking"}
+            mode="admin"
+            title={
+              resTypeFilter === "social_hall"
+                ? "Ocupación del salón — actividad de residentes"
+                : "Ocupación de parqueaderos — actividad de residentes"
+            }
+          />
+        </Card>
+
         <Card>
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">Reservas</h3>
@@ -1956,6 +1985,7 @@ export default function AdminDashboard({
             </table>
           </div>
         </Card>
+        </div>
       )}
 
       {section === "gimnasio" && (

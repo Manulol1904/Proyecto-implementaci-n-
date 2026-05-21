@@ -14,6 +14,7 @@ Este documento resume **cómo piensa el sistema**, **qué fechas usa** y una **c
 | **Factura** | Una cuota mensual por **unidad** y **periodo** (`YYYY-MM`). Estado: Pendiente → Pagada; o Pendiente → **Vencida** si pasa la fecha límite. |
 | **Pago** | Orquestado por el servicio **payments** (API interna). Al confirmarse, la factura pasa a **Pagada**. La factura electrónica DIAN va por **Factus**. |
 | **Facturación electrónica (Factus)** | Administración, parqueadero, salón comunal y gimnasio. Tras pagar reserva/gym (o generar cuota mensual), el worker emite en Factus si hay credenciales y **perfil fiscal** completo. |
+| **Calendario de reservas** | `GET /reservations/calendar?from=&to=&type=` — verde = libre, ocupado = otro residente (admin ve nombre). Residente: clic en libre rellena el formulario. |
 
 **Regla de visibilidad:** el residente no “posee” facturas por su cuenta; las ve porque su `user_id` está en `resident_user_id` de la unidad asociada a la factura.
 

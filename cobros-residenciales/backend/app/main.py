@@ -9,11 +9,24 @@ from app.routers import admin, amenities, auth, billing, factus, gym, invoices, 
 
 configure_logging()
 
+
+def _cors_origins() -> list[str]:
+    base = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+    ]
+    if settings.cors_extra_origins.strip():
+        base.extend(x.strip() for x in settings.cors_extra_origins.split(",") if x.strip())
+    return base
+
+
 app = FastAPI(title="Cobros Residenciales - Backend", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_allow_origins,
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -146,6 +146,37 @@ class ReservationCreate(BaseModel):
     end_at: datetime
 
 
+class CalendarAmenityItem(BaseModel):
+    id: str = Field(alias="_id")
+    type: AmenityType
+    code: str
+    active: bool
+
+    model_config = {"populate_by_name": True}
+
+
+class CalendarEventItem(BaseModel):
+    reservation_id: str
+    amenity_id: str
+    amenity_code: str
+    amenity_type: AmenityType
+    start_at: datetime
+    end_at: datetime
+    status: ReservationStatus
+    user_id: str
+    user_name: str | None = None
+    is_mine: bool = False
+
+
+class ReservationCalendarResponse(BaseModel):
+    from_at: datetime = Field(alias="from")
+    to_at: datetime = Field(alias="to")
+    amenities: list[CalendarAmenityItem]
+    events: list[CalendarEventItem]
+
+    model_config = {"populate_by_name": True}
+
+
 class ReservationPublic(MongoModel):
     amenity_id: str
     amenity_type: AmenityType

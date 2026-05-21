@@ -24,13 +24,8 @@ class Settings(BaseSettings):
     social_hall_daily_cop: int = 150000
     gym_monthly_cop: int = 40000
 
-    # CORS (frontend dev: 5173 Vite local, 5174 Docker host)
-    cors_allow_origins: list[str] = [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-    ]
+    # Orígenes extra en prod: CORS_EXTRA_ORIGINS=https://app.ejemplo.com,https://otro.com
+    cors_extra_origins: str = ""
 
     # Factus (para descargas autenticadas en backend)
     factus_host: str = "https://api-sandbox.factus.com.co"

@@ -12,6 +12,7 @@ import { backend, payments } from "../../lib/api";
 import { detailFromAxiosError, downloadInvoiceBlob } from "../../lib/apiErrors";
 import { useSection, type ResidentSection } from "../../lib/section";
 import ProfilePanel from "../../components/ProfilePanel";
+import ReservationCalendar from "../../components/ReservationCalendar";
 import type { Me } from "../../lib/auth";
 
 type Invoice = {
@@ -571,6 +572,19 @@ export default function ResidentDashboard({
       {tab === "parqueadero" && (
         <div className="space-y-6">
           <Card>
+            <ReservationCalendar
+              amenityType="visitor_parking"
+              mode="resident"
+              onSelectParking={(amenityId, start, end) => {
+                setParkingAmenityId(amenityId);
+                setParkingStart(start);
+                setParkingEnd(end);
+                setInfo("Horario seleccionado en el calendario. Revisa y pulsa «Reservar y pagar».");
+              }}
+            />
+          </Card>
+
+          <Card>
             <div className="space-y-4">
               <div>
                 <div className="text-base font-semibold text-app-text">Reservar parqueadero de visitantes</div>
@@ -699,6 +713,18 @@ export default function ResidentDashboard({
 
       {tab === "salon" && (
         <div className="space-y-6">
+          <Card>
+            <ReservationCalendar
+              amenityType="social_hall"
+              mode="resident"
+              onSelectHallDay={(amenityId, dateISO) => {
+                setHallAmenityId(amenityId);
+                setHallDate(dateISO);
+                setInfo("Día seleccionado en el calendario. Confirma la reserva abajo.");
+              }}
+            />
+          </Card>
+
           <Card>
             <div className="space-y-4">
               <div>
