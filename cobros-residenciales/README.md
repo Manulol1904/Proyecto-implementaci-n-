@@ -1,9 +1,9 @@
 ## Cobros residenciales (Colombia) — microservicios Docker
 
-Portal para administrar la vida del conjunto: cobros de administración por coeficiente, **reservas de amenidades** (parqueadero de visitantes y salón comunal), **suscripciones del gimnasio**, facturación electrónica (Factus) y cobro en línea (Wompi / ePayco) con control de estados.
+Portal para administrar la vida del conjunto: cobros de administración por coeficiente, **reservas de amenidades** (parqueadero de visitantes y salón comunal), **suscripciones del gimnasio**, facturación electrónica (**Factus API**) y registro de pagos vía API interna (`payments`).
 
 ### Arquitectura
-- **Frontend**: React + Vite + Tailwind (puerto `5173`)
+- **Frontend**: React + Vite + Tailwind (puerto host `5174` en dev con Docker; `5173` dentro del contenedor)
 - **Backend**: FastAPI + JWT + MongoDB (local por defecto / Atlas en prod) (puerto `8000`)
 - **Worker**: Celery + Redis (genera cobros mensuales + Factus)
 - **Payments**: FastAPI (links de pago + webhooks) (puerto `8002`)
@@ -16,7 +16,7 @@ Portal para administrar la vida del conjunto: cobros de administración por coef
 
 ### Configuración
 1. Copia `.env.example` a `.env` y completa variables (en dev ya trae `mongodb://mongo:27017`).
-2. Recomendado en dev: `PAYMENTS_PROVIDER=mock` y deja Factus vacío.
+2. Recomendado en dev: deja Factus vacío si no tienes credenciales sandbox.
 3. Variables nuevas relacionadas con reservas / gimnasio:
    - `VISITOR_PARKING_HOURLY_COP` (por hora, default `2000`)
    - `SOCIAL_HALL_DAILY_COP` (por día, default `150000`)
@@ -35,7 +35,7 @@ docker compose --env-file .env up --build
 ```
 
 Servicios:
-- Frontend: `http://localhost:5173`
+- Frontend: `http://localhost:5174`
 - Backend docs: `http://localhost:8000/docs`
 - Payments docs: `http://localhost:8002/docs`
 - Mongo Express (ver BD): `http://localhost:8081`
@@ -56,8 +56,6 @@ docker compose -f docker-compose.prod.yml --env-file .env up --build -d
 
 Notas:
 - En prod debes poner `JWT_SECRET` fuerte.
-- Para webhooks de Wompi / ePayco necesitas URLs **HTTPS públicas** apuntando al servicio `payments`.
-
 ### Ver datos en la base de datos (dev)
 En Mongo Express revisa estas colecciones:
 - `users` — usuarios (admin/resident) y sus `_id` (útil para `resident_user_id`)
@@ -109,7 +107,7 @@ El servicio **payments** ya no está atado a facturas: soporta pagar cualquier `
 Flujo:
 1. El frontend hace `POST /payments` con `{ target_kind, target_id, provider }`.
 2. El servicio valida ownership (un residente solo puede pagar lo suyo), genera el `payment_link` y persiste el target en el documento.
-3. El proveedor llama el **webhook** correspondiente (`/webhooks/{mock|wompi}` o `/webhooks/epayco/confirmation`) y se marca el target como **Pagada**.
+3. El frontend confirma el pago con `POST /mock/confirm/{payment_id}` (o webhook genérico `POST /webhooks/mock`) y se marca el target como **Pagada**.
 
 Compatibilidad: el frontend antiguo que enviaba solo `invoice_id` se sigue aceptando (se normaliza a `target_kind=invoice`).
 
@@ -177,7 +175,7 @@ Modelos clave (en `backend/app/domain/`):
 
 ### Notas
 - **Estados de factura**: `Pendiente`, `Pagada`, `Vencida`.
-- Para pasar a integración real: configura claves de Factus y Wompi / ePayco en `.env`.
+- Para facturación electrónica real: configura credenciales de **Factus** en `.env`.
 - Imagen de fondo del login en `frontend/public/residential-bg.png` (reemplazable).
 
 ### Estructura relevante del frontend

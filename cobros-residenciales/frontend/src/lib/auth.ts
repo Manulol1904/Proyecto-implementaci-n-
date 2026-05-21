@@ -6,6 +6,7 @@ export type Me = {
   full_name: string;
   role: Role;
   created_at: string;
+  tax_profile?: Record<string, unknown> | null;
 };
 
 const KEY = "cobros_token";

@@ -18,7 +18,7 @@ class PaymentCreate(BaseModel):
     invoice_id: str | None = None
     target_kind: TargetKind | None = None
     target_id: str | None = None
-    provider: str = Field(default="mock", description="mock|wompi|epayco")
+    provider: str = Field(default="mock", description="API interna de pagos (mock)")
 
     @model_validator(mode="after")
     def _normalize(self) -> "PaymentCreate":

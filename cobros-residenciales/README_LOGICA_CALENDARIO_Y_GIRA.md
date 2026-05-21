@@ -12,8 +12,8 @@ Este documento resume **cómo piensa el sistema**, **qué fechas usa** y una **c
 | **Usuario residente** | Ve solo las facturas de las **unidades** que tiene asignadas. |
 | **Unidad** | Ej. apartamento (`APT-101`). Tiene **coeficiente de copropiedad** \(0 \< coef ≤ 1\). Opcionalmente tiene **residente asignado**. |
 | **Factura** | Una cuota mensual por **unidad** y **periodo** (`YYYY-MM`). Estado: Pendiente → Pagada; o Pendiente → **Vencida** si pasa la fecha límite. |
-| **Pago** | Orquestado por el servicio de **payments** (mock, Wompi o ePayco según configuración). Al confirmarse, la factura pasa a **Pagada**. |
-| **Facturación electrónica (Factus)** | Opcional. Si hay credenciales y **perfil fiscal** del residente completo, el **worker** puede validar/emitir y guardar CUFE, PDF, etc. |
+| **Pago** | Orquestado por el servicio **payments** (API interna). Al confirmarse, la factura pasa a **Pagada**. La factura electrónica DIAN va por **Factus**. |
+| **Facturación electrónica (Factus)** | Administración, parqueadero, salón comunal y gimnasio. Tras pagar reserva/gym (o generar cuota mensual), el worker emite en Factus si hay credenciales y **perfil fiscal** completo. |
 
 **Regla de visibilidad:** el residente no “posee” facturas por su cuenta; las ve porque su `user_id` está en `resident_user_id` de la unidad asociada a la factura.
 
@@ -98,7 +98,7 @@ docker compose up -d --build
 
 Espera ~30–60 s y verifica:
 
-- Frontend: http://localhost:5173  
+- Frontend: **http://localhost:5174** (importante: no uses 5173; Docker mapea 5174→5173)  
 - API: http://localhost:8000/health  
 
 ### 4.2 Credenciales típicas (después del seed demo)
@@ -118,7 +118,7 @@ Si la BD está vacía: hay que crear el primer admin con `POST /auth/register` (
 2. **Unidades**: muestra coeficientes y residentes asignados (seed crea varias).
 3. **Facturas**: lista por periodo `YYYY-MM`; explica Pendiente / Vencida / Pagada.
 4. **Login residente** (otro navegador o ventana privada) → solo sus facturas de su unidad.
-5. **Pago mock**: iniciar pago desde una factura pendiente y confirmar que pasa a **Pagada** (según UI del frontend y `PAYMENTS_PROVIDER=mock`).
+5. **Pago**: iniciar pago desde una factura pendiente y confirmar que pasa a **Pagada** (API interna de `payments`).
 6. (Opcional) **Mongo Express**: http://localhost:8081 — inspeccionar colecciones `users`, `units`, `invoices`.
 
 ### 4.4 Qué decir en una frase (elevator pitch)

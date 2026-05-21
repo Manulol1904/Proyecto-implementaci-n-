@@ -9,8 +9,8 @@
   :root {
     --app-bg: 244 245 251;
     --app-surface: 255 255 255;
-    --app-elevated: 240 242 248;
-    --app-border: 228 230 239;
+    --app-elevated: 248 250 252;
+    --app-border: 203 213 225;
     --app-muted: 107 114 128;
     --app-text: 31 36 51;
 
@@ -108,6 +108,12 @@
 }
 
 @layer components {
+  /* Botón secundario explícito (evita heredar text-white del componente Button primary) */
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-xl border border-app-border bg-app-surface px-4 py-2 text-sm font-semibold text-app-text shadow-sm transition;
+    @apply hover:bg-app-elevated hover:border-slate-300;
+  }
+
   .animated-residential-bg {
     @apply pointer-events-none absolute inset-0 overflow-hidden;
   }

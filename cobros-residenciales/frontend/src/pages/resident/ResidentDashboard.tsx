@@ -9,7 +9,10 @@ import ConsumptionBars, {
   type ConsumptionItem,
 } from "../../components/ConsumptionBars";
 import { backend, payments } from "../../lib/api";
+import { detailFromAxiosError, downloadInvoiceBlob } from "../../lib/apiErrors";
 import { useSection, type ResidentSection } from "../../lib/section";
+import ProfilePanel from "../../components/ProfilePanel";
+import type { Me } from "../../lib/auth";
 
 type Invoice = {
   _id: string;
@@ -94,7 +97,13 @@ function addDays(d: Date, days: number): Date {
   return copy;
 }
 
-export default function ResidentDashboard() {
+export default function ResidentDashboard({
+  me,
+  onMeUpdated,
+}: {
+  me: Me;
+  onMeUpdated?: (next: Me) => void;
+}) {
   /** Pestaña activa controlada desde el sidebar (vía SectionContext). */
   const { section: sectionRaw, setSection: setSectionRaw } = useSection();
   const tab = sectionRaw as Tab;
@@ -108,10 +117,6 @@ export default function ResidentDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [showProcess, setShowProcess] = useState(false);
-  const [steps, setSteps] = useState<Array<{ at: string; title: string; detail?: string }>>([]);
-  const [gateway, setGateway] = useState<"auto" | "mock" | "wompi" | "epayco">("auto");
-  const [pendingPayment, setPendingPayment] = useState<{ paymentId: string; targetKind: TargetKind; targetId: string } | null>(null);
 
   // Form: parqueadero visitantes
   const [parkingAmenityId, setParkingAmenityId] = useState("");
@@ -121,11 +126,6 @@ export default function ResidentDashboard() {
   // Form: salón comunal
   const [hallAmenityId, setHallAmenityId] = useState("");
   const [hallDate, setHallDate] = useState("");
-
-  function logStep(title: string, detail?: string) {
-    setShowProcess(true);
-    setSteps((s) => [{ at: new Date().toLocaleTimeString("es-CO"), title, detail }, ...s].slice(0, 40));
-  }
 
   async function refreshAll() {
     setError(null);
@@ -303,116 +303,32 @@ export default function ResidentDashboard() {
   async function pay(targetKind: TargetKind, targetId: string) {
     setLoading(true);
     setError(null);
+    setInfo(null);
     try {
-      const payload: any = { target_kind: targetKind, target_id: targetId };
-      if (import.meta.env.DEV && gateway !== "auto") payload.provider = gateway;
-      logStep("POST payments: crear pago", JSON.stringify(payload));
+      const payload = { target_kind: targetKind, target_id: targetId };
       const r = await payments.post("/payments", payload);
       const paymentId = r.data.payment_id as string;
-      const provider = r.data.provider as string;
-      const link = r.data.payment_link as string;
-      logStep("Respuesta create_payment", JSON.stringify({ payment_id: paymentId, provider, payment_link: link }));
-
-      try {
-        const p = await payments.get(`/payments/${paymentId}`);
-        logStep("GET payments/{id}: estado inicial", JSON.stringify({ status: p.data.status, provider_ref: p.data.provider_ref }));
-      } catch {
-        // ignore
-      }
-
-      if (import.meta.env.DEV && provider !== "mock") {
-        logStep("POST demo/confirm: simular confirmación", paymentId);
-        await payments.post(`/demo/confirm/${paymentId}`);
-        logStep("Confirmación demo aplicada", "Marcado como Pagado (demo)");
-        await refreshAll();
-        return;
-      }
-
-      if (provider === "mock") {
-        logStep("POST mock/confirm: simular confirmación", paymentId);
-        await payments.post(`/mock/confirm/${paymentId}`);
-        logStep("Confirmación mock aplicada", "Marcado como Pagado (mock)");
-        await refreshAll();
-      } else if (provider === "epayco" && link.startsWith("epayco_session:")) {
-        const sessionId = link.replace("epayco_session:", "");
-        logStep("Proveedor ePayco: abrir checkout", JSON.stringify({ sessionId }));
-        const scriptId = "epayco-checkout";
-        if (!document.getElementById(scriptId)) {
-          const s = document.createElement("script");
-          s.id = scriptId;
-          s.src = "https://checkout.epayco.co/checkout.js";
-          s.async = true;
-          document.body.appendChild(s);
-          await new Promise<void>((resolve, reject) => {
-            s.onload = () => resolve();
-            s.onerror = () => reject(new Error("No se pudo cargar checkout ePayco"));
-          });
-        }
-        // @ts-expect-error epayco global
-        const checkout = window.ePayco.checkout.configure({
-          sessionId,
-          type: "standard",
-          test: true,
-        });
-        checkout.open();
-        setInfo("Se abrió ePayco. Cuando se confirme por webhook, refresca esta página.");
-        logStep("Checkout ePayco abierto", "Esperando confirmación por webhook");
-        setPendingPayment({ paymentId, targetKind, targetId });
-      } else {
-        logStep("Proveedor link externo: abrir", link);
-        window.open(link, "_blank", "noopener,noreferrer");
-        setInfo("Se abrió el link de pago. Cuando el pago se confirme por webhook, refresca esta página.");
-        logStep("Link de pago abierto", "Esperando confirmación por webhook");
-        setPendingPayment({ paymentId, targetKind, targetId });
-      }
+      await payments.post(`/mock/confirm/${paymentId}`);
+      setInfo("Pago registrado correctamente.");
+      await refreshAll();
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "No se pudo iniciar el pago");
-      logStep("Error iniciando pago", e?.response?.data?.detail ?? String(e));
     } finally {
       setLoading(false);
     }
   }
 
-  // Polling: si el pago queda pendiente (webhook), refresca hasta confirmar
-  useEffect(() => {
-    if (!pendingPayment) return;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const p = await payments.get(`/payments/${pendingPayment.paymentId}`);
-        logStep("Polling payments/{id}", JSON.stringify({ status: p.data.status }));
-        if (p.data.status === "confirmed" || p.data.status === "failed") {
-          await refreshAll();
-          if (!cancelled) setPendingPayment(null);
-        }
-      } catch (e: any) {
-        logStep("Polling error", e?.response?.data?.detail ?? String(e));
-      }
-    };
-    const id = window.setInterval(() => tick(), 3000);
-    tick();
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [pendingPayment]);
-
   async function download(invoiceId: string, kind: "pdf" | "xml") {
     setError(null);
     try {
-      logStep(`GET invoices/{id}/${kind}: descargar`, invoiceId);
-      const r = await backend.get(`/invoices/${invoiceId}/${kind}`, { responseType: "blob" });
-      const size = (r.data as Blob).size ?? 0;
-      logStep("Descarga OK", JSON.stringify({ content_type: r.headers["content-type"], bytes: size }));
-      const contentType = r.headers["content-type"];
-      const mime = typeof contentType === "string" ? contentType : "application/octet-stream";
-      const blob = new Blob([r.data], { type: mime });
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener,noreferrer");
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    } catch (e: any) {
-      setError(e?.response?.data?.detail ?? `No se pudo descargar ${kind.toUpperCase()}`);
-      logStep("Error descargando", e?.response?.data?.detail ?? String(e));
+      await downloadInvoiceBlob(
+        (url, config) => backend.get(url, config),
+        invoiceId,
+        kind,
+      );
+    } catch (e: unknown) {
+      const msg = (await detailFromAxiosError(e)) ?? `No se pudo descargar ${kind.toUpperCase()}`;
+      setError(msg);
     }
   }
 
@@ -441,13 +357,11 @@ export default function ResidentDashboard() {
     try {
       const startISO = startDate.toISOString();
       const endISO = endDate.toISOString();
-      logStep("POST reservations (parqueadero)", JSON.stringify({ amenity_id: parkingAmenityId, start_at: startISO, end_at: endISO }));
       const r = await backend.post("/reservations", {
         amenity_id: parkingAmenityId,
         start_at: startISO,
         end_at: endISO,
       });
-      logStep("Reserva creada", JSON.stringify({ id: r.data._id, amount_cop: r.data.amount_cop }));
       setInfo(`Reserva creada por $${Number(r.data.amount_cop).toLocaleString("es-CO")}. Iniciando pago…`);
       setParkingStart("");
       setParkingEnd("");
@@ -475,13 +389,11 @@ export default function ResidentDashboard() {
     try {
       const start = new Date(`${hallDate}T00:00:00`);
       const end = new Date(`${hallDate}T23:59:00`);
-      logStep("POST reservations (salón)", JSON.stringify({ amenity_id: hallAmenityId, date: hallDate }));
       const r = await backend.post("/reservations", {
         amenity_id: hallAmenityId,
         start_at: start.toISOString(),
         end_at: end.toISOString(),
       });
-      logStep("Reserva creada", JSON.stringify({ id: r.data._id, amount_cop: r.data.amount_cop }));
       setInfo(`Reserva creada por $${Number(r.data.amount_cop).toLocaleString("es-CO")}. Iniciando pago…`);
       setHallDate("");
       await refreshAll();
@@ -498,7 +410,6 @@ export default function ResidentDashboard() {
     setLoading(true);
     setError(null);
     try {
-      logStep("POST reservations/{id}/cancel", id);
       await backend.post(`/reservations/${id}/cancel`);
       setInfo("Reserva cancelada.");
       await refreshAll();
@@ -514,9 +425,7 @@ export default function ResidentDashboard() {
     setError(null);
     setInfo(null);
     try {
-      logStep("POST gym/subscriptions", JSON.stringify({ period }));
       const r = await backend.post("/gym/subscriptions", { period });
-      logStep("Suscripción lista", JSON.stringify({ id: r.data._id, amount_cop: r.data.amount_cop, status: r.data.status }));
       await refreshAll();
       if (r.data.status === "Pagada") {
         setInfo("Tu suscripción de este mes ya está pagada.");
@@ -531,6 +440,10 @@ export default function ResidentDashboard() {
   }
 
   const TAB_META: Record<Tab, { title: string; subtitle: string }> = {
+    perfil: {
+      title: "Mi perfil",
+      subtitle: "Tu cuenta, datos fiscales para Factus y facturas electrónicas.",
+    },
     facturas: {
       title: "Mis facturas",
       subtitle: "Cuotas de administración pendientes y pagadas.",
@@ -550,6 +463,10 @@ export default function ResidentDashboard() {
   };
   const tabMeta = TAB_META[tab];
 
+  if (tab === "perfil") {
+    return <ProfilePanel me={me} role="resident" onMeUpdated={onMeUpdated} />;
+  }
+
   return (
     <div className="space-y-8">
       <div className="space-y-2">
@@ -564,11 +481,6 @@ export default function ResidentDashboard() {
       )}
       {info && (
         <div className="rounded-2xl border border-app-success-border bg-app-success-bg p-4 text-sm text-app-success-text">{info}</div>
-      )}
-      {pendingPayment && (
-        <div className="rounded-2xl border border-app-warning-border bg-app-warning-bg p-4 text-sm leading-relaxed text-app-warning-text">
-          Pago pendiente de confirmación. Estamos actualizando automáticamente…
-        </div>
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -589,27 +501,6 @@ export default function ResidentDashboard() {
           onSelect={(key) => setTab(key as Tab)}
         />
       </div>
-
-      {import.meta.env.DEV && (
-        <Card>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-semibold">Pasarela (demo)</div>
-              <div className="text-sm text-app-muted">En dev puedes elegir proveedor para probar el flujo.</div>
-            </div>
-            <select
-              value={gateway}
-              onChange={(e) => setGateway(e.target.value as any)}
-              className="rounded-xl border border-app-border bg-app-surface px-3 py-2 text-xs text-app-text outline-none focus-visible:ring-2 focus-visible:ring-app-cyan/35"
-            >
-              <option value="auto">Auto (config servidor)</option>
-              <option value="mock">Mock</option>
-              <option value="wompi">Wompi</option>
-              <option value="epayco">ePayco</option>
-            </select>
-          </div>
-        </Card>
-      )}
 
       {tab === "facturas" && (
         <Card>
@@ -634,22 +525,24 @@ export default function ResidentDashboard() {
                     <td className="py-3 text-right">
                       <div className="flex flex-wrap justify-end gap-2">
                         {(i.pdf_url || i.factus_public_url) && (
-                          <button
+                          <Button
                             type="button"
-                            className="text-xs font-medium text-app-cyan hover:brightness-125"
+                            variant="secondary"
+                            className="px-2 py-0.5 text-xs"
                             onClick={() => download(i._id, "pdf")}
                           >
                             PDF
-                          </button>
+                          </Button>
                         )}
                         {i.xml_url && (
-                          <button
+                          <Button
                             type="button"
-                            className="text-xs font-medium text-app-cyan hover:brightness-125"
+                            variant="secondary"
+                            className="px-2 py-0.5 text-xs"
                             onClick={() => download(i._id, "xml")}
                           >
                             XML
-                          </button>
+                          </Button>
                         )}
                         <Button
                           disabled={loading || i.status === "Pagada"}
@@ -983,40 +876,6 @@ export default function ResidentDashboard() {
           </Card>
         </div>
       )}
-
-      <Card>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <div className="text-base font-semibold text-app-text">Proceso (API)</div>
-            <div className="text-sm text-app-muted">Registro de llamadas y respuestas más recientes.</div>
-          </div>
-          <button
-            type="button"
-            className="shrink-0 rounded-xl border border-app-border bg-app-elevated px-4 py-2 text-sm text-app-text hover:bg-app-elevated"
-            onClick={() => setShowProcess((v) => !v)}
-          >
-            {showProcess ? "Ocultar" : "Mostrar"}
-          </button>
-        </div>
-        {showProcess && (
-          <div className="mt-5 space-y-3 text-sm">
-            {steps.length === 0 && (
-              <div className="text-app-muted">Aún no hay acciones. Reserva, paga o descarga PDF/XML.</div>
-            )}
-            {steps.map((s, idx) => (
-              <div key={idx} className="rounded-xl border border-app-border bg-app-surface px-4 py-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="font-semibold text-app-text">{s.title}</div>
-                  <div className="text-xs text-app-muted">{s.at}</div>
-                </div>
-                {s.detail && (
-                  <pre className="mt-2 whitespace-pre-wrap break-words text-sm text-app-text">{s.detail}</pre>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
     </div>
   );
 }

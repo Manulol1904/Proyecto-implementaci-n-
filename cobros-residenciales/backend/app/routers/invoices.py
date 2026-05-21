@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 import base64
 import httpx
+from gridfs.errors import NoFile
 from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 
 from app.core.config import settings
@@ -44,7 +45,7 @@ async def _factus_download_pdf_bytes(*, number: str) -> tuple[bytes, str]:
     Factus v2: GET /v2/bills/{number}/download-pdf  -> Base64
     """
     token = await _factus_access_token()
-    headers = {"Accept": "application/json", "access_token": token}
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(f"{settings.factus_host.rstrip('/')}/v2/bills/{number}/download-pdf", headers=headers)
         r.raise_for_status()
@@ -60,7 +61,7 @@ async def _factus_download_xml_bytes(*, number: str) -> tuple[bytes, str]:
     Factus: GET /v1/bills/download-xml/{number} -> Base64
     """
     token = await _factus_access_token()
-    headers = {"Accept": "application/json", "access_token": token}
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(f"{settings.factus_host.rstrip('/')}/v1/bills/download-xml/{number}", headers=headers)
         r.raise_for_status()
@@ -77,7 +78,7 @@ async def _factus_send_email(*, number: str, email: str) -> dict:
     Docs: https://developers.factus.com.co/facturas/enviar-correo/
     """
     token = await _factus_access_token()
-    headers = {"Accept": "application/json", "Content-Type": "application/json", "access_token": token}
+    headers = {"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     payload = {"email": email}
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(f"{settings.factus_host.rstrip('/')}/v1/bills/send-email/{number}", json=payload, headers=headers)
@@ -110,6 +111,25 @@ async def _read_file(file_id: str) -> tuple[bytes, dict]:
     return data, meta
 
 
+async def _read_stored_file_or_none(file_id: str) -> tuple[bytes, dict] | None:
+    try:
+        return await _read_file(file_id)
+    except NoFile:
+        return None
+
+
+def _factus_http_detail(exc: httpx.HTTPStatusError) -> str:
+    try:
+        body = exc.response.json()
+        if isinstance(body, dict):
+            msg = body.get("message") or body.get("error") or body.get("detail")
+            if msg:
+                return str(msg)
+    except Exception:
+        pass
+    return f"Factus respondió {exc.response.status_code}"
+
+
 async def _refresh_overdues() -> None:
     if mongo.db is None:
         return
@@ -118,6 +138,19 @@ async def _refresh_overdues() -> None:
         {"status": InvoiceStatus.pendiente.value, "due_date": {"$lt": now}},
         {"$set": {"status": InvoiceStatus.vencida.value}},
     )
+
+
+async def _assert_invoice_access(invoice_id: str, user: dict) -> dict:
+    if mongo.db is None:
+        raise bad_request("DB not ready")
+    doc = await mongo.db.invoices.find_one({"_id": invoice_id})
+    if not doc:
+        raise not_found("Invoice not found")
+    if user["role"] != UserRole.admin.value:
+        unit = await mongo.db.units.find_one({"_id": doc["unit_id"]})
+        if not unit or unit.get("resident_user_id") != user["_id"]:
+            raise not_found("Invoice not found")
+    return doc
 
 
 @router.get("", response_model=list[InvoicePublic], dependencies=[Depends(require_role(UserRole.admin))])
@@ -198,12 +231,16 @@ async def download_pdf(invoice_id: str, user: dict = Depends(get_current_user)):
         if not unit or unit.get("resident_user_id") != user["_id"]:
             raise not_found("Invoice not found")
 
-    # Prefer storage propio (GridFS) si existe
-    if doc.get("pdf_file_id"):
-        data, meta = await _read_file(str(doc["pdf_file_id"]))
-        ctype = meta.get("content_type") or "application/pdf"
-        fname = meta.get("filename") or f"{invoice_id}.pdf"
-        return Response(content=data, media_type=ctype, headers={"Content-Disposition": f'inline; filename="{fname}"'})
+    # Prefer storage propio (GridFS) si existe (puede quedar huérfano tras reset de Mongo)
+    pdf_file_id = doc.get("pdf_file_id")
+    if pdf_file_id:
+        stored = await _read_stored_file_or_none(str(pdf_file_id))
+        if stored:
+            data, meta = stored
+            ctype = meta.get("content_type") or "application/pdf"
+            fname = meta.get("filename") or f"{invoice_id}.pdf"
+            return Response(content=data, media_type=ctype, headers={"Content-Disposition": f'inline; filename="{fname}"'})
+        await mongo.db.invoices.update_one({"_id": invoice_id}, {"$unset": {"pdf_file_id": ""}})
 
     url = doc.get("pdf_url") or doc.get("factus_public_url")
     if url:
@@ -221,7 +258,12 @@ async def download_pdf(invoice_id: str, user: dict = Depends(get_current_user)):
 
     number = doc.get("factus_number")
     if number and _factus_enabled():
-        content, fname = await _factus_download_pdf_bytes(number=str(number))
+        try:
+            content, fname = await _factus_download_pdf_bytes(number=str(number))
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=502, detail=_factus_http_detail(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"No se pudo obtener el PDF desde Factus: {exc}") from exc
         try:
             fid = await _store_file(invoice_id, "pdf", content, fname, "application/pdf")
             await mongo.db.invoices.update_one({"_id": invoice_id}, {"$set": {"pdf_file_id": fid}})
@@ -233,7 +275,7 @@ async def download_pdf(invoice_id: str, user: dict = Depends(get_current_user)):
             headers={"Content-Disposition": f'inline; filename="{fname}"'},
         )
 
-    raise not_found("PDF not available")
+    raise not_found("PDF no disponible. Emite la factura en Factus o espera unos segundos.")
 
 
 @router.get("/{invoice_id}/xml")
@@ -249,11 +291,15 @@ async def download_xml(invoice_id: str, user: dict = Depends(get_current_user)):
         if not unit or unit.get("resident_user_id") != user["_id"]:
             raise not_found("Invoice not found")
 
-    if doc.get("xml_file_id"):
-        data, meta = await _read_file(str(doc["xml_file_id"]))
-        ctype = meta.get("content_type") or "application/xml"
-        fname = meta.get("filename") or f"{invoice_id}.xml"
-        return Response(content=data, media_type=ctype, headers={"Content-Disposition": f'inline; filename="{fname}"'})
+    xml_file_id = doc.get("xml_file_id")
+    if xml_file_id:
+        stored = await _read_stored_file_or_none(str(xml_file_id))
+        if stored:
+            data, meta = stored
+            ctype = meta.get("content_type") or "application/xml"
+            fname = meta.get("filename") or f"{invoice_id}.xml"
+            return Response(content=data, media_type=ctype, headers={"Content-Disposition": f'inline; filename="{fname}"'})
+        await mongo.db.invoices.update_one({"_id": invoice_id}, {"$unset": {"xml_file_id": ""}})
 
     url = doc.get("xml_url")
     if url:
@@ -270,7 +316,12 @@ async def download_xml(invoice_id: str, user: dict = Depends(get_current_user)):
 
     number = doc.get("factus_number")
     if number and _factus_enabled():
-        content, fname = await _factus_download_xml_bytes(number=str(number))
+        try:
+            content, fname = await _factus_download_xml_bytes(number=str(number))
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=502, detail=_factus_http_detail(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"No se pudo obtener el XML desde Factus: {exc}") from exc
         try:
             fid = await _store_file(invoice_id, "xml", content, fname, "application/xml")
             await mongo.db.invoices.update_one({"_id": invoice_id}, {"$set": {"xml_file_id": fid}})
@@ -282,7 +333,7 @@ async def download_xml(invoice_id: str, user: dict = Depends(get_current_user)):
             headers={"Content-Disposition": f'inline; filename="{fname}"'},
         )
 
-    raise not_found("XML not available")
+    raise not_found("XML no disponible. Emite la factura en Factus primero.")
 
 
 @router.post("/generate", response_model=dict, dependencies=[Depends(require_role(UserRole.admin))])
@@ -342,25 +393,23 @@ async def delete_invoice(invoice_id: str):
     return {"deleted": True}
 
 
-@router.post("/{invoice_id}/retry-factus", dependencies=[Depends(require_role(UserRole.admin))])
-async def retry_factus(invoice_id: str):
+@router.post("/{invoice_id}/retry-factus")
+async def retry_factus(invoice_id: str, user: dict = Depends(get_current_user)):
     """
     Reintenta emitir factura electrónica vía worker (Celery).
-    Requiere que el residente asignado tenga `tax_profile`.
+    Admin: cualquier factura. Residente: solo facturas de sus unidades.
     """
-    if mongo.db is None:
-        raise bad_request("DB not ready")
-    inv = await mongo.db.invoices.find_one({"_id": invoice_id})
-    if not inv:
-        raise not_found("Invoice not found")
-
-    # fire-and-forget; worker does validation and sets factus_error
-    celery_app.send_task("app.tasks.emit_invoice", args=[invoice_id])
+    await _assert_invoice_access(invoice_id, user)
+    celery_app.send_task("app.tasks.emit_billing_document", args=["invoice", invoice_id])
     return {"queued": True}
 
 
-@router.post("/{invoice_id}/send-email", dependencies=[Depends(require_role(UserRole.admin))])
-async def send_invoice_email(invoice_id: str, email: str | None = None):
+@router.post("/{invoice_id}/send-email")
+async def send_invoice_email(
+    invoice_id: str,
+    email: str | None = None,
+    user: dict = Depends(get_current_user),
+):
     """
     Reenvía la factura electrónica por correo usando Factus.
     - Usa el número `factus_number` de la factura.
@@ -368,9 +417,7 @@ async def send_invoice_email(invoice_id: str, email: str | None = None):
     """
     if mongo.db is None:
         raise bad_request("DB not ready")
-    inv = await mongo.db.invoices.find_one({"_id": invoice_id})
-    if not inv:
-        raise not_found("Invoice not found")
+    inv = await _assert_invoice_access(invoice_id, user)
     number = inv.get("factus_number")
     if not number:
         raise bad_request("Invoice has no factus_number (not emitted)")

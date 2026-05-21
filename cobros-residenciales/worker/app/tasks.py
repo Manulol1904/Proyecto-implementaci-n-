@@ -244,9 +244,21 @@ def retry_factus_errors() -> dict:
         }
         attempted = 0
         emitted = 0
-        for inv in mongo.db.invoices.find(query).limit(max(1, int(settings.factus_retry_limit))):
+        limit = max(1, int(settings.factus_retry_limit))
+        for inv in mongo.db.invoices.find(query).limit(limit):
             attempted += 1
             result = _emit_invoice_connected(inv["_id"], factus=factus, token=token)
+            if result.get("ok"):
+                emitted += 1
+        paid_query = {**query, "status": "Pagada"}
+        for res in mongo.db.reservations.find(paid_query).limit(limit):
+            attempted += 1
+            result = _emit_reservation_connected(res["_id"], factus=factus, token=token)
+            if result.get("ok"):
+                emitted += 1
+        for sub in mongo.db.gym_subscriptions.find(paid_query).limit(limit):
+            attempted += 1
+            result = _emit_gym_subscription_connected(sub["_id"], factus=factus, token=token)
             if result.get("ok"):
                 emitted += 1
         out = {"attempted": attempted, "emitted": emitted}
@@ -373,24 +385,87 @@ def precompute_metrics() -> dict:
         disconnect_mongo()
 
 
-@shared_task(name="app.tasks.emit_invoice")
-def emit_invoice(invoice_id: str) -> dict:
-    """
-    Emite (o reintenta) una factura específica vía Factus.
-    Usado por el admin desde el backend: POST /invoices/{id}/retry-factus
-    """
+def _apply_factus_result(collection: str, doc_id: str, res: dict) -> None:
+    if mongo.db is None:
+        return
+    mongo.db[collection].update_one(
+        {"_id": doc_id},
+        {
+            "$set": {
+                "factus_invoice_id": res["factus_invoice_id"],
+                "factus_number": res.get("factus_number"),
+                "factus_cufe": res.get("factus_cufe"),
+                "factus_public_url": res.get("factus_public_url"),
+                "pdf_url": res["pdf_url"],
+                "xml_url": res["xml_url"],
+                "factus_raw": res.get("raw"),
+                "factus_error": None,
+                "factus_last_retry_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+
+def _set_factus_error(collection: str, doc_id: str, error: str) -> None:
+    if mongo.db is None:
+        return
+    mongo.db[collection].update_one(
+        {"_id": doc_id},
+        {"$set": {"factus_error": error[:300], "factus_last_retry_at": datetime.now(timezone.utc)}},
+    )
+
+
+def _tax_profile_for_user(user_id: str | None) -> tuple[str | None, dict | None]:
+    if not user_id or mongo.db is None:
+        return None, None
+    u = mongo.db.users.find_one({"_id": user_id}) or {}
+    return u.get("email"), u.get("tax_profile")
+
+
+def _require_tax_profile(tax_profile: dict | None) -> bool:
+    required = [
+        "identification_document_id",
+        "identification",
+        "names",
+        "address",
+        "email",
+        "phone",
+        "municipality_id",
+    ]
+    return bool(tax_profile) and not any(tax_profile.get(k) in (None, "", 0) for k in required)
+
+
+@shared_task(name="app.tasks.emit_billing_document")
+def emit_billing_document(target_kind: str, target_id: str) -> dict:
+    """Emite Factus para administración, reserva (parqueadero/salón) o gimnasio."""
     connect_mongo()
     try:
         if mongo.db is None:
             raise RuntimeError("DB not ready")
         factus = FactusClient()
         if not factus.enabled():
-            mongo.db.invoices.update_one({"_id": invoice_id}, {"$set": {"factus_error": "factus_not_configured"}})
+            coll = {"invoice": "invoices", "reservation": "reservations", "gym_subscription": "gym_subscriptions"}.get(
+                target_kind
+            )
+            if coll:
+                _set_factus_error(coll, target_id, "factus_not_configured")
             return {"ok": False, "error": "factus_not_configured"}
         token = _get_factus_token(factus)
-        return _emit_invoice_connected(invoice_id, factus=factus, token=token)
+        if target_kind == "invoice":
+            return _emit_invoice_connected(target_id, factus=factus, token=token)
+        if target_kind == "reservation":
+            return _emit_reservation_connected(target_id, factus=factus, token=token)
+        if target_kind == "gym_subscription":
+            return _emit_gym_subscription_connected(target_id, factus=factus, token=token)
+        return {"ok": False, "error": f"unsupported_kind:{target_kind}"}
     finally:
         disconnect_mongo()
+
+
+@shared_task(name="app.tasks.emit_invoice")
+def emit_invoice(invoice_id: str) -> dict:
+    """Compat: emisión de cuota de administración."""
+    return emit_billing_document("invoice", invoice_id)
 
 
 def _emit_invoice_connected(invoice_id: str, *, factus: FactusClient, token: str) -> dict:
@@ -430,28 +505,90 @@ def _emit_invoice_connected(invoice_id: str, *, factus: FactusClient, token: str
             resident_email=resident_email,
             tax_profile=tax_profile,
         )
-        mongo.db.invoices.update_one(
-            {"_id": invoice_id},
-            {
-                "$set": {
-                    "factus_invoice_id": res["factus_invoice_id"],
-                    "factus_number": res.get("factus_number"),
-                    "factus_cufe": res.get("factus_cufe"),
-                    "factus_public_url": res.get("factus_public_url"),
-                    "pdf_url": res["pdf_url"],
-                    "xml_url": res["xml_url"],
-                    "factus_raw": res.get("raw"),
-                    "factus_error": None,
-                    "factus_last_retry_at": datetime.now(timezone.utc),
-                }
-            },
-        )
+        _apply_factus_result("invoices", invoice_id, res)
         return {"ok": True}
     except Exception as e:
-        mongo.db.invoices.update_one(
-            {"_id": invoice_id},
-            {"$set": {"factus_error": str(e)[:300], "factus_last_retry_at": datetime.now(timezone.utc)}},
+        _set_factus_error("invoices", invoice_id, str(e))
+        return {"ok": False, "error": str(e)}
+
+
+def _emit_reservation_connected(reservation_id: str, *, factus: FactusClient, token: str) -> dict:
+    if mongo.db is None:
+        raise RuntimeError("DB not ready")
+    try:
+        res_doc = mongo.db.reservations.find_one({"_id": reservation_id})
+        if not res_doc:
+            return {"ok": False, "error": "reservation_not_found"}
+        if res_doc.get("factus_number") or res_doc.get("factus_invoice_id"):
+            return {"ok": True, "skipped": "already_emitted"}
+        if res_doc.get("status") != "Pagada":
+            return {"ok": False, "error": "reservation_not_paid"}
+
+        email, tax_profile = _tax_profile_for_user(res_doc.get("user_id"))
+        if not _require_tax_profile(tax_profile):
+            _set_factus_error("reservations", reservation_id, "missing_tax_profile_for_factus")
+            return {"ok": False, "error": "missing_tax_profile_for_factus"}
+
+        code = res_doc.get("amenity_code", "RES")
+        atype = res_doc.get("amenity_type", "")
+        start = res_doc.get("start_at")
+        start_s = start.strftime("%Y-%m-%d") if hasattr(start, "strftime") else str(start)[:10]
+        if atype == "visitor_parking":
+            prefix, item_name = "PKG", f"Parqueadero visitante {code} {start_s}"
+        else:
+            prefix, item_name = "SAL", f"Salón comunal {code} {start_s}"
+        reference_code = f"{prefix}-{code}-{reservation_id[:8]}"
+
+        result = _emit_service_factus(
+            factus,
+            access_token=token,
+            reference_code=reference_code,
+            item_code=f"{prefix}-{code}",
+            item_name=item_name,
+            amount_cop=int(res_doc["amount_cop"]),
+            resident_email=email,
+            tax_profile=tax_profile,
         )
+        _apply_factus_result("reservations", reservation_id, result)
+        return {"ok": True}
+    except Exception as e:
+        _set_factus_error("reservations", reservation_id, str(e))
+        return {"ok": False, "error": str(e)}
+
+
+def _emit_gym_subscription_connected(sub_id: str, *, factus: FactusClient, token: str) -> dict:
+    if mongo.db is None:
+        raise RuntimeError("DB not ready")
+    try:
+        sub = mongo.db.gym_subscriptions.find_one({"_id": sub_id})
+        if not sub:
+            return {"ok": False, "error": "subscription_not_found"}
+        if sub.get("factus_number") or sub.get("factus_invoice_id"):
+            return {"ok": True, "skipped": "already_emitted"}
+        if sub.get("status") != "Pagada":
+            return {"ok": False, "error": "subscription_not_paid"}
+
+        email, tax_profile = _tax_profile_for_user(sub.get("user_id"))
+        if not _require_tax_profile(tax_profile):
+            _set_factus_error("gym_subscriptions", sub_id, "missing_tax_profile_for_factus")
+            return {"ok": False, "error": "missing_tax_profile_for_factus"}
+
+        period = sub.get("period", "")
+        reference_code = f"GYM-{period}-{sub_id[:8]}"
+        result = _emit_service_factus(
+            factus,
+            access_token=token,
+            reference_code=reference_code,
+            item_code=f"GYM-{period}",
+            item_name=f"Suscripción gimnasio {period}",
+            amount_cop=int(sub["amount_cop"]),
+            resident_email=email,
+            tax_profile=tax_profile,
+        )
+        _apply_factus_result("gym_subscriptions", sub_id, result)
+        return {"ok": True}
+    except Exception as e:
+        _set_factus_error("gym_subscriptions", sub_id, str(e))
         return {"ok": False, "error": str(e)}
 
 
@@ -460,6 +597,46 @@ def _get_factus_token(factus: FactusClient) -> str:
 
     async def _run():
         return await factus.get_access_token()
+
+    return asyncio.run(_run())
+
+
+def _factus_result_from_bill(r) -> dict:
+    return {
+        "factus_invoice_id": r.reference_code,
+        "factus_number": r.number,
+        "factus_cufe": r.cufe,
+        "factus_public_url": r.public_url,
+        "pdf_url": r.pdf_url,
+        "xml_url": r.xml_url,
+        "raw": r.raw,
+    }
+
+
+def _emit_service_factus(
+    factus: FactusClient,
+    *,
+    access_token: str,
+    reference_code: str,
+    item_code: str,
+    item_name: str,
+    amount_cop: int,
+    resident_email: str | None,
+    tax_profile: dict | None,
+) -> dict:
+    import asyncio
+
+    async def _run():
+        r = await factus.validate_service_bill(
+            access_token=access_token,
+            reference_code=reference_code,
+            item_code=item_code,
+            item_name=item_name,
+            amount_cop=amount_cop,
+            resident_email=resident_email,
+            tax_profile=tax_profile,
+        )
+        return _factus_result_from_bill(r)
 
     return asyncio.run(_run())
 
@@ -483,14 +660,6 @@ def _emit_factus(
             resident_email=resident_email,
             tax_profile=tax_profile,
         )
-        return {
-            "factus_invoice_id": r.reference_code,
-            "factus_number": r.number,
-            "factus_cufe": r.cufe,
-            "factus_public_url": r.public_url,
-            "pdf_url": r.pdf_url,
-            "xml_url": r.xml_url,
-            "raw": r.raw,
-        }
+        return _factus_result_from_bill(r)
 
     return asyncio.run(_run())

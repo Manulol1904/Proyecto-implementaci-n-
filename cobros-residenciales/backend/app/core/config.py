@@ -24,8 +24,13 @@ class Settings(BaseSettings):
     social_hall_daily_cop: int = 150000
     gym_monthly_cop: int = 40000
 
-    # CORS
-    cors_allow_origins: list[str] = ["http://localhost:5173"]
+    # CORS (frontend dev: 5173 Vite local, 5174 Docker host)
+    cors_allow_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+    ]
 
     # Factus (para descargas autenticadas en backend)
     factus_host: str = "https://api-sandbox.factus.com.co"
@@ -33,6 +38,11 @@ class Settings(BaseSettings):
     factus_client_secret: str | None = None
     factus_username: str | None = None
     factus_password: str | None = None
+    factus_numbering_range_id: int | None = None
+
+    # Llamadas internas (payments → backend para encolar Factus)
+    internal_api_key: str | None = None
+    backend_public_url: str = "http://localhost:8000"
 
 
 settings = Settings()

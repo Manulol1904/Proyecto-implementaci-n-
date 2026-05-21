@@ -40,7 +40,7 @@ async def municipalities(name: str | None = Query(default=None)):
     Docs: https://developers.factus.com.co/tablas-de-referencia/municipios/
     """
     token = await _factus_access_token()
-    headers = {"Accept": "application/json", "access_token": token}
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
     params = {"name": name} if name else None
     async with httpx.AsyncClient(timeout=30) as client:
         # Docs muestran v1/v2 dependiendo del módulo; v2 usa /v2/municipalities
@@ -56,7 +56,7 @@ async def measurement_units(name: str | None = Query(default=None)):
     Docs: https://developers.factus.com.co/tablas-de-referencia/unit-measures/
     """
     token = await _factus_access_token()
-    headers = {"Accept": "application/json", "access_token": token}
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
     params = {"name": name} if name else None
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(f"{settings.factus_host.rstrip('/')}/v2/measurement-units", headers=headers, params=params)

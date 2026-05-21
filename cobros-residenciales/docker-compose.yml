@@ -7,7 +7,8 @@ services:
       - VITE_PAYMENTS_URL=${VITE_PAYMENTS_URL:-http://localhost:8002}
       - CHOKIDAR_USEPOLLING=true
     ports:
-      - "5173:5173"
+      # 5174 en el host: evita choque con otro Vite/npm en 5173
+      - "5174:5173"
     volumes:
       # Bind-mount source so Vite HMR picks up host edits during dev.
       # The anonymous `/app/node_modules` volume preserves the container's installed deps.
@@ -48,6 +49,7 @@ services:
       - ./.env
     environment:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - BACKEND_URL=http://backend:8000
     ports:
       - "8002:8002"
     depends_on:

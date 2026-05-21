@@ -5,6 +5,7 @@ import { createContext, useContext, useMemo, useState, type ReactNode } from "re
  * Each value maps to a panel rendered by AdminDashboard / ResidentDashboard.
  */
 export type AdminSection =
+  | "perfil"
   | "usuarios"
   | "unidades"
   | "facturas"
@@ -12,7 +13,7 @@ export type AdminSection =
   | "reservas"
   | "gimnasio";
 
-export type ResidentSection = "facturas" | "parqueadero" | "salon" | "gimnasio";
+export type ResidentSection = "perfil" | "facturas" | "parqueadero" | "salon" | "gimnasio";
 
 export type AppSection = AdminSection | ResidentSection;
 

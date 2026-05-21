@@ -106,7 +106,7 @@ class InvoiceCreateInternal(BaseModel):
 
 class PaymentCreate(BaseModel):
     invoice_id: str
-    provider: str = Field(description="mock|wompi|epayco")
+    provider: str = Field(default="mock", description="API interna de pagos")
 
 
 class PaymentPublic(MongoModel):
@@ -156,6 +156,15 @@ class ReservationPublic(MongoModel):
     end_at: datetime
     amount_cop: int
     status: ReservationStatus
+    factus_invoice_id: str | None = None
+    factus_number: str | None = None
+    factus_cufe: str | None = None
+    factus_public_url: str | None = None
+    factus_error: str | None = None
+    pdf_url: str | None = None
+    xml_url: str | None = None
+    pdf_file_id: str | None = None
+    xml_file_id: str | None = None
     created_at: datetime
     paid_at: datetime | None = None
 
@@ -169,6 +178,15 @@ class GymSubscriptionPublic(MongoModel):
     period: str
     amount_cop: int
     status: GymSubscriptionStatus
+    factus_invoice_id: str | None = None
+    factus_number: str | None = None
+    factus_cufe: str | None = None
+    factus_public_url: str | None = None
+    factus_error: str | None = None
+    pdf_url: str | None = None
+    xml_url: str | None = None
+    pdf_file_id: str | None = None
+    xml_file_id: str | None = None
     created_at: datetime
     paid_at: datetime | None = None
 

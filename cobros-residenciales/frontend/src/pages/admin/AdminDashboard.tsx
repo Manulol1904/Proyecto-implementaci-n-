@@ -9,7 +9,10 @@ import ConsumptionBars, {
   type ConsumptionItem,
 } from "../../components/ConsumptionBars";
 import { backend } from "../../lib/api";
+import { detailFromAxiosError, downloadInvoiceBlob } from "../../lib/apiErrors";
 import { useSection, type AdminSection } from "../../lib/section";
+import ProfilePanel from "../../components/ProfilePanel";
+import type { Me } from "../../lib/auth";
 
 type Dashboard = {
   total_recaudado_cop: number;
@@ -28,7 +31,19 @@ type Invoice = {
   xml_url?: string | null;
   factus_error?: string | null;
   factus_invoice_id?: string | null;
+  factus_number?: string | null;
+  factus_cufe?: string | null;
 };
+
+function factusRowStatus(i: Invoice): { label: string; className: string; title?: string } {
+  if (i.factus_number || i.factus_cufe) {
+    return { label: "Emitida", className: "text-emerald-300", title: i.factus_number ?? undefined };
+  }
+  if (i.factus_error) {
+    return { label: "Error", className: "text-amber-300", title: i.factus_error };
+  }
+  return { label: "Pendiente", className: "text-app-muted" };
+}
 type User = { _id: string; email: string; full_name: string; role: "admin" | "resident"; tax_profile?: any | null };
 type MorosidadRow = {
   unit_id: string;
@@ -172,7 +187,13 @@ function MiniChart({
   );
 }
 
-export default function AdminDashboard() {
+export default function AdminDashboard({
+  me,
+  onMeUpdated,
+}: {
+  me: Me;
+  onMeUpdated?: (next: Me) => void;
+}) {
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [units, setUnits] = useState<Unit[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -817,17 +838,18 @@ export default function AdminDashboard() {
 
   async function deleteInvoice(invoiceId: string) {
     if (!confirm("¿Eliminar factura?")) return;
-    setCreating(true);
+    setBusyId(invoiceId);
     setError(null);
     setInfo(null);
     try {
       await backend.delete(`/invoices/${invoiceId}`);
+      if (selectedInvoice?._id === invoiceId) setSelectedInvoice(null);
       setInfo("Factura eliminada.");
       await refresh();
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? "No se pudo eliminar la factura");
+      setError(formatApiDetail(e?.response?.data?.detail) ?? "No se pudo eliminar la factura");
     } finally {
-      setCreating(false);
+      setBusyId(null);
     }
   }
 
@@ -848,17 +870,46 @@ export default function AdminDashboard() {
   }
 
   async function retryFactus(invoiceId: string) {
-    setCreating(true);
+    setBusyId(invoiceId);
     setError(null);
     setInfo(null);
     try {
       await backend.post(`/invoices/${invoiceId}/retry-factus`);
-      setInfo("Reintento Factus encolado. Refresca en unos segundos.");
-      await refresh();
+      setInfo("Emitiendo en Factus… actualizando en unos segundos.");
+      for (let n = 0; n < 5; n++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        await refresh();
+        const updated = (await backend.get(`/invoices/${invoiceId}`)).data as Invoice;
+        setSelectedInvoice((cur) => (cur?._id === invoiceId ? updated : cur));
+        if (updated.factus_number || updated.factus_cufe) {
+          setInfo(`Factus OK: ${updated.factus_number ?? "emitida"}`);
+          break;
+        }
+        if (updated.factus_error && n === 4) {
+          setError(`Factus: ${updated.factus_error}`);
+        }
+      }
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? "No se pudo reintentar Factus");
+      setError(formatApiDetail(e?.response?.data?.detail) ?? "No se pudo reintentar Factus");
     } finally {
-      setCreating(false);
+      setBusyId(null);
+    }
+  }
+
+  async function downloadInvoiceFile(invoiceId: string, kind: "pdf" | "xml") {
+    setBusyId(invoiceId);
+    setError(null);
+    try {
+      await downloadInvoiceBlob(
+        (url, config) => backend.get(url, config),
+        invoiceId,
+        kind,
+      );
+    } catch (e: unknown) {
+      const msg = (await detailFromAxiosError(e)) ?? `No se pudo descargar ${kind.toUpperCase()}`;
+      setError(msg);
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -877,6 +928,10 @@ export default function AdminDashboard() {
   }
 
   const SECTION_META: Record<Section, { title: string; subtitle: string }> = {
+    perfil: {
+      title: "Mi perfil",
+      subtitle: "Cuenta, perfil fiscal Factus y facturas electrónicas en un solo lugar.",
+    },
     facturas: {
       title: "Facturas",
       subtitle: "Cobros del mes, morosidad y métricas del conjunto.",
@@ -904,6 +959,10 @@ export default function AdminDashboard() {
   };
   const meta = SECTION_META[section];
 
+  if (section === "perfil") {
+    return <ProfilePanel me={me} role="admin" onMeUpdated={onMeUpdated} />;
+  }
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
@@ -924,7 +983,7 @@ export default function AdminDashboard() {
             <Button
               onClick={() => setShowResidents(true)}
               disabled={creating}
-              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
+              variant="secondary"
             >
               Gestionar residentes
             </Button>
@@ -933,7 +992,7 @@ export default function AdminDashboard() {
             <Button
               onClick={() => setShowNewUnit(true)}
               disabled={creating}
-              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
+              variant="secondary"
             >
               Nueva unidad
             </Button>
@@ -1075,7 +1134,8 @@ export default function AdminDashboard() {
                             <Button
                               onClick={() => setEditingResidentId(null)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                              variant="secondary"
+              className="px-3 py-1 text-xs"
                             >
                               Cancelar
                             </Button>
@@ -1085,14 +1145,16 @@ export default function AdminDashboard() {
                             <Button
                               onClick={() => startEditResident(u)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                              variant="secondary"
+              className="px-3 py-1 text-xs"
                             >
                               Editar
                             </Button>
                             <Button
                               onClick={() => startEditTax(u)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                              variant="secondary"
+              className="px-3 py-1 text-xs"
                             >
                               Fiscal
                             </Button>
@@ -1102,14 +1164,16 @@ export default function AdminDashboard() {
                                 setResetPwdValue("");
                               }}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                              variant="secondary"
+              className="px-3 py-1 text-xs"
                             >
                               Clave
                             </Button>
                             <Button
                               onClick={() => deleteResident(u._id)}
                               disabled={creating}
-                              className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
+                              variant="danger"
+              className="px-3 py-1 text-xs"
                             >
                               Eliminar
                             </Button>
@@ -1153,7 +1217,8 @@ export default function AdminDashboard() {
                     setTaxJson("");
                   }}
                   disabled={creating}
-                  className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                  variant="secondary"
+              className="px-3 py-1 text-xs"
                 >
                   Cancelar
                 </Button>
@@ -1181,7 +1246,8 @@ export default function AdminDashboard() {
                 <Button
                   onClick={() => setResetPwdResidentId(null)}
                   disabled={creating}
-                  className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                  variant="secondary"
+              className="px-3 py-1 text-xs"
                 >
                   Cancelar
                 </Button>
@@ -1228,7 +1294,7 @@ export default function AdminDashboard() {
                   setNewUnitCoeff("");
                 }}
                 disabled={creating}
-                className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
+                variant="secondary"
               >
                 Limpiar
               </Button>
@@ -1354,7 +1420,7 @@ export default function AdminDashboard() {
                 setShowResidents(true);
               }}
               disabled={creating}
-              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
+              variant="secondary"
             >
               Crear / editar residentes
             </Button>
@@ -1385,7 +1451,7 @@ export default function AdminDashboard() {
             <Button
               onClick={() => setShowNewUnit((v) => !v)}
               disabled={creating}
-              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border"
+              variant="secondary"
             >
               Crear unidad
             </Button>
@@ -1460,7 +1526,8 @@ export default function AdminDashboard() {
                             <Button
                               onClick={() => setEditingUnitId(null)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                              variant="secondary"
+              className="px-3 py-1 text-xs"
                             >
                               Cancelar
                             </Button>
@@ -1470,14 +1537,16 @@ export default function AdminDashboard() {
                             <Button
                               onClick={() => startEditUnit(u)}
                               disabled={creating}
-                              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                              variant="secondary"
+              className="px-3 py-1 text-xs"
                             >
                               Editar
                             </Button>
                             <Button
                               onClick={() => deleteUnit(u._id)}
                               disabled={creating}
-                              className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
+                              variant="danger"
+              className="px-3 py-1 text-xs"
                             >
                               Eliminar
                             </Button>
@@ -1578,7 +1647,8 @@ export default function AdminDashboard() {
                   setAppliedInvoicePeriod("");
                   setInvoiceFilterError(null);
                 }}
-                className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                variant="secondary"
+              className="px-3 py-1 text-xs"
               >
                 Limpiar
               </Button>
@@ -1602,46 +1672,61 @@ export default function AdminDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {visibleInvoices.slice(0, 20).map((i) => (
+                {visibleInvoices.slice(0, 20).map((i) => {
+                  const fs = factusRowStatus(i);
+                  const rowBusy = busyId === i._id;
+                  return (
                   <tr key={i._id} className="border-t border-app-border">
                     <td className="py-3">{i.period}</td>
                     <td className="py-3">{i.unit_id.slice(0, 8)}…</td>
                     <td className="py-3">${i.amount_cop.toLocaleString("es-CO")}</td>
                     <td className="py-3">{i.status}</td>
-                    <td className="py-3">
-                      {i.factus_invoice_id ? (
-                        <span className="text-emerald-300">Emitida</span>
-                      ) : i.factus_error ? (
-                        <span className="text-amber-300">Error</span>
-                      ) : (
-                        <span className="text-app-muted">—</span>
+                    <td className="py-3 max-w-[10rem]">
+                      <span className={fs.className} title={fs.title}>
+                        {fs.label}
+                      </span>
+                      {i.factus_error && !i.factus_number && (
+                        <div className="mt-0.5 truncate text-[10px] text-amber-200/80" title={i.factus_error}>
+                          {i.factus_error.slice(0, 48)}
+                          {i.factus_error.length > 48 ? "…" : ""}
+                        </div>
                       )}
                     </td>
                     <td className="py-3 text-right">
-                      <div className="flex justify-end gap-2">
+                      <div className="flex flex-wrap justify-end gap-2">
                         <Button
+                          type="button"
                           onClick={() => setSelectedInvoice(i)}
-                          disabled={creating}
-                          className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                          disabled={rowBusy}
+                          variant="secondary"
+              className="px-3 py-1 text-xs"
                         >
                           Ver
                         </Button>
-                        {!i.factus_invoice_id && (
-                          <Button onClick={() => retryFactus(i._id)} disabled={creating} className="px-3 py-1 text-xs">
-                            Reintentar Factus
+                        {(!i.factus_number || i.factus_error) && (
+                          <Button
+                            type="button"
+                            onClick={() => void retryFactus(i._id)}
+                            disabled={rowBusy}
+                            className="px-3 py-1 text-xs"
+                          >
+                            {rowBusy ? "Factus…" : "Reintentar Factus"}
                           </Button>
                         )}
                         <Button
-                          onClick={() => deleteInvoice(i._id)}
-                          disabled={creating}
-                          className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
+                          type="button"
+                          onClick={() => void deleteInvoice(i._id)}
+                          disabled={rowBusy}
+                          variant="danger"
+              className="px-3 py-1 text-xs"
                         >
-                          Eliminar
+                          {rowBusy ? "…" : "Eliminar"}
                         </Button>
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
                 {visibleInvoices.length === 0 && (
                   <tr>
                     <td colSpan={6} className="py-3 text-app-muted">
@@ -1721,14 +1806,16 @@ export default function AdminDashboard() {
                         <Button
                           onClick={() => toggleAmenity(a)}
                           disabled={busyId === a._id}
-                          className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                          variant="secondary"
+              className="px-3 py-1 text-xs"
                         >
                           {busyId === a._id ? "…" : a.active ? "Desactivar" : "Activar"}
                         </Button>
                         <Button
                           onClick={() => deleteAmenity(a._id)}
                           disabled={busyId === a._id}
-                          className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
+                          variant="danger"
+              className="px-3 py-1 text-xs"
                         >
                           Eliminar
                         </Button>
@@ -1792,7 +1879,8 @@ export default function AdminDashboard() {
                   setResStatusFilter("");
                   setResTypeFilter("");
                 }}
-                className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                variant="secondary"
+              className="px-3 py-1 text-xs"
               >
                 Limpiar
               </Button>
@@ -1839,7 +1927,8 @@ export default function AdminDashboard() {
                           <Button
                             onClick={() => cancelReservation(r._id)}
                             disabled={busyId === r._id}
-                            className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                            variant="secondary"
+              className="px-3 py-1 text-xs"
                           >
                             {busyId === r._id ? "…" : "Cancelar"}
                           </Button>
@@ -1847,7 +1936,8 @@ export default function AdminDashboard() {
                         <Button
                           onClick={() => deleteReservation(r._id)}
                           disabled={busyId === r._id}
-                          className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
+                          variant="danger"
+              className="px-3 py-1 text-xs"
                         >
                           Eliminar
                         </Button>
@@ -1890,7 +1980,8 @@ export default function AdminDashboard() {
               <Button
                 type="button"
                 onClick={() => setGymPeriodFilter("")}
-                className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+                variant="secondary"
+              className="px-3 py-1 text-xs"
               >
                 Limpiar
               </Button>
@@ -1918,7 +2009,8 @@ export default function AdminDashboard() {
                       <Button
                         onClick={() => deleteGymSub(s._id)}
                         disabled={busyId === s._id}
-                        className="!bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:!bg-rose-700"
+                        variant="danger"
+              className="px-3 py-1 text-xs"
                       >
                         {busyId === s._id ? "…" : "Eliminar"}
                       </Button>
@@ -1954,12 +2046,35 @@ export default function AdminDashboard() {
               </Button>
             )}
             <Button
-              onClick={() => retryFactus(selectedInvoice._id)}
-              disabled={creating}
-              className="border border-app-border !bg-app-elevated text-app-text hover:!bg-app-border px-3 py-1 text-xs"
+              type="button"
+              onClick={() => void retryFactus(selectedInvoice._id)}
+              disabled={busyId === selectedInvoice._id}
+              variant="secondary"
+              className="px-3 py-1 text-xs"
             >
-              Reintentar Factus
+              {busyId === selectedInvoice._id ? "Factus…" : "Reintentar Factus"}
             </Button>
+            {selectedInvoice.factus_number && (
+              <>
+                <Button
+                  type="button"
+                  onClick={() => void downloadInvoiceFile(selectedInvoice._id, "pdf")}
+                  disabled={busyId === selectedInvoice._id}
+                  className="px-3 py-1 text-xs"
+                >
+                  PDF Factus
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void downloadInvoiceFile(selectedInvoice._id, "xml")}
+                  disabled={busyId === selectedInvoice._id}
+                  variant="secondary"
+              className="px-3 py-1 text-xs"
+                >
+                  XML
+                </Button>
+              </>
+            )}
           </div>
           {selectedInvoice.factus_error && (
             <div className="mt-3 rounded-2xl border border-app-warning-border bg-app-warning-bg p-3 text-sm text-app-warning-text">

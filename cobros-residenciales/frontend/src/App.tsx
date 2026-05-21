@@ -17,6 +17,7 @@ type NavItem = {
 };
 
 const adminNav: NavItem[] = [
+  { id: "perfil", label: "Mi perfil", icon: <IconProfile /> },
   { id: "facturas", label: "Facturas", icon: <IconInvoice /> },
   { id: "usuarios", label: "Usuarios", icon: <IconUsers /> },
   { id: "unidades", label: "Unidades", icon: <IconBuilding /> },
@@ -26,6 +27,7 @@ const adminNav: NavItem[] = [
 ];
 
 const residentNav: NavItem[] = [
+  { id: "perfil", label: "Mi perfil", icon: <IconProfile /> },
   { id: "facturas", label: "Mis facturas", icon: <IconInvoice /> },
   { id: "parqueadero", label: "Parqueadero", icon: <IconCar /> },
   { id: "salon", label: "Salón comunal", icon: <IconHall /> },
@@ -33,6 +35,7 @@ const residentNav: NavItem[] = [
 ];
 
 const SECTION_TITLES: Record<AppSection, string> = {
+  perfil: "Mi perfil",
   facturas: "Facturas",
   usuarios: "Usuarios",
   unidades: "Unidades",
@@ -130,7 +133,7 @@ function ThemeToggle() {
 }
 
 function TopBar({ me, onLogout }: { me: Me; onLogout: () => void }) {
-  const { section } = useSection();
+  const { section, setSection } = useSection();
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-app-border bg-app-surface px-4 sm:px-6">
       <div>
@@ -142,15 +145,25 @@ function TopBar({ me, onLogout }: { me: Me; onLogout: () => void }) {
         </div>
       </div>
       <div className="flex items-center gap-3 sm:gap-4">
-        <div className="hidden text-right sm:block">
+        <button
+          type="button"
+          onClick={() => setSection("perfil")}
+          className="hidden text-right sm:block rounded-lg px-2 py-1 transition hover:bg-app-elevated"
+          title="Ir a mi perfil"
+        >
           <div className="text-sm font-medium text-app-text">{me.full_name}</div>
-          <div className="text-[11px] capitalize text-app-muted">{me.role}</div>
-        </div>
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-app-primary/15 text-app-primary">
+          <div className="text-[11px] capitalize text-app-muted">{me.role} · Perfil</div>
+        </button>
+        <button
+          type="button"
+          onClick={() => setSection("perfil")}
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-app-primary/15 text-app-primary transition hover:bg-app-primary/25 sm:hidden"
+          title="Mi perfil"
+        >
           <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
             <path d="M12 12a4 4 0 100-8 4 4 0 000 8zm0 2c-3.314 0-8 1.657-8 5v1h16v-1c0-3.343-4.686-5-8-5z" />
           </svg>
-        </div>
+        </button>
         <ThemeToggle />
         <button
           data-testid="logout"
@@ -165,7 +178,15 @@ function TopBar({ me, onLogout }: { me: Me; onLogout: () => void }) {
   );
 }
 
-function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
+function Shell({
+  me,
+  onLogout,
+  onMeUpdated,
+}: {
+  me: Me;
+  onLogout: () => void;
+  onMeUpdated: (next: Me) => void;
+}) {
   const items = me.role === "admin" ? adminNav : residentNav;
   return (
     <SectionProvider initial="facturas">
@@ -181,7 +202,13 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
               <Routes>
                 <Route
                   path="/"
-                  element={me.role === "admin" ? <AdminDashboard /> : <ResidentDashboard />}
+                  element={
+                    me.role === "admin" ? (
+                      <AdminDashboard me={me} onMeUpdated={onMeUpdated} />
+                    ) : (
+                      <ResidentDashboard me={me} onMeUpdated={onMeUpdated} />
+                    )
+                  }
                 />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
@@ -241,7 +268,7 @@ function AppInner() {
         Cargando…
       </div>
     );
-  return <Shell me={me} onLogout={logout} />;
+  return <Shell me={me} onLogout={logout} onMeUpdated={setMe} />;
 }
 
 export default function App() {
@@ -253,6 +280,14 @@ export default function App() {
 }
 
 /* ---------- Tiny inline icons (no extra deps) ---------- */
+function IconProfile() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 20c0-3 3.13-5 7-5s7 2 7 5" />
+    </svg>
+  );
+}
 function IconUsers() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
